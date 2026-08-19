@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/matthewhu/Projects/AI-Infrastructure-Debugger/agent/build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

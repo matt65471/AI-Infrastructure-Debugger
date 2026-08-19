@@ -1,0 +1,3 @@
+/Users/matthewhu/Projects/AI-Infrastructure-Debugger/agent/build/CMakeFiles/telemetry_agent.dir
+/Users/matthewhu/Projects/AI-Infrastructure-Debugger/agent/build/CMakeFiles/edit_cache.dir
+/Users/matthewhu/Projects/AI-Infrastructure-Debugger/agent/build/CMakeFiles/rebuild_cache.dir
