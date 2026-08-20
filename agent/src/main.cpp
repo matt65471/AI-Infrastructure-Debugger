@@ -1,4 +1,5 @@
 #include "cpu_collector.h"
+#include "mem_collector.h"
 
 #include <chrono>
 #include <exception>
@@ -9,6 +10,7 @@
 int main() {
     try {
         CpuCollector cpu_collector;
+        MemCollector mem_collector;
         CpuSample previous = cpu_collector.read_sample();
 
         while (true) {
@@ -20,6 +22,8 @@ int main() {
 
             std::cout << "cpu_usage_percent=" << std::fixed
                       << std::setprecision(2) << cpu_usage << '\n';
+            
+            const MemSample mem = mem_collector.read_sample();
 
             previous = current;
         }

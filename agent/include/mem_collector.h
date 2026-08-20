@@ -2,21 +2,25 @@
 #define MEM_COLLECTOR_H
 
 #include <cstdint>
+#include <unordered_map>
+#include <string>
 
 struct MemSample {
-    std::uint64_t MemTotal = 0;
-    std::uint64_t MemAvailable = 0;
-    std::uint64_t MemFree = 0;
-    std::uint64_t Buffers = 0;
-    std::uint64_t Cached = 0;
-    std::uint64_t SwapTotal = 0;
-    std::uint64_t SwapFree = 0;
+    std::unordered_map<std::string, uint64_t> tracked_info = {
+        {"MemTotal", 0},
+        {"MemAvailable", 0},
+        {"MemFree", 0},
+        {"Buffers", 0},
+        {"Cached", 0},
+        {"SwapTota", 0},
+        {"SwapFree", 0}
+    };
 };
 
 class MemCollector {
 public:
     MemSample read_sample() const;
-    double calculate_utilization(const MemSample& sample) const;
+    double calculate_memory_utilization(const MemSample& sample) const;
 };
 
 #endif

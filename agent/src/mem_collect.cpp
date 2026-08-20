@@ -20,16 +20,27 @@ MemSample MemCollector::read_sample() const {
     while (std::getline(proc_meminfo, line)) {
         std::istringstream ss(line);
         std::string word;
+        uint64_t value;
 
         ss >> word;
 
-        if (sample.variables.find(word) != sample.variables.end()) {
-            std::string temp = word;
-            ss >> word;
-            std::cout << temp << " " << word << std::endl;
+        if (!word.empty() && word.back() == ':') {
+            word.pop_back();
+        }
+
+        if (sample.tracked_info.find(word) != sample.tracked_info.end()) {
+            ss >> value;
+
+            sample.tracked_info[word] = value;
+
+            std::cout << word << ": " << value << std::endl;
             
         }
     }
+    return sample;
+};
 
-
-}
+double MemCollector::calculate_memory_utilization(const MemSample& sample) const{
+    double used = static_cast<double>(sample.tracked_info.at("MemTotal")) - static_cast<double>(sample.tracked_info.at("MemAvailable"));
+    return 100.0 * (used / static_cast<double>(sample.tracked_info.at("MemTotal")));
+};
