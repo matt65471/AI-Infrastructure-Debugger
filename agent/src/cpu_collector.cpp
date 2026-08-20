@@ -16,7 +16,7 @@ std::uint64_t idle_time(const CpuSample& sample) {
     return sample.idle + sample.iowait;
 }
 
-}  // namespace
+}
 
 CpuSample CpuCollector::read_sample() const {
     std::ifstream proc_stat("/proc/stat");
@@ -38,6 +38,8 @@ CpuSample CpuCollector::read_sample() const {
     if (!stream || label != "cpu") {
         throw std::runtime_error("failed to parse aggregate cpu line from /proc/stat");
     }
+
+    proc_stat.close();
 
     return sample;
 }
