@@ -1,5 +1,4 @@
-#include "cpu_collector.h"
-#include "mem_collector.h"
+#include "telemetry_collector.h"
 
 #include <chrono>
 #include <exception>
@@ -9,23 +8,22 @@
 
 int main() {
     try {
-        CpuCollector cpu_collector;
-        MemCollector mem_collector;
-        CpuSample previous = cpu_collector.read_sample();
+        TelemetryCollector telemetry_collector;
 
         while (true) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
 
-            const CpuSample current = cpu_collector.read_sample();
-            const double cpu_usage =
-                cpu_collector.calculate_utilization(previous, current);
-
+            const TelemetrySnapshot snapshot = telemetry_collector.collect();
             std::cout << "cpu_usage_percent=" << std::fixed
-                      << std::setprecision(2) << cpu_usage << '\n';
-            
-            const MemSample mem = mem_collector.read_sample();
-
-            previous = current;
+                      << std::setprecision(2) << snapshot.cpu_usage_percent
+                      << " memory_usage_percent="
+                      << snapshot.memory_usage_percent
+                      << " memory_available_kb="
+                      << snapshot.memory_available_kb
+                      << " network_rx_bytes_per_second="
+                      << snapshot.network_rx_bytes_per_second
+                      << " network_tx_bytes_per_second="
+                      << snapshot.network_tx_bytes_per_second << '\n';
         }
     } catch (const std::exception& error) {
         std::cerr << "telemetry_agent error: " << error.what() << '\n';
