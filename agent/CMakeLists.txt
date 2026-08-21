@@ -4,8 +4,11 @@ project(telemetry_agent LANGUAGES CXX)
 
 add_executable(telemetry_agent
     src/cpu_collector.cpp
+    src/disk_collector.cpp
     src/mem_collector.cpp
     src/network_collector.cpp
+    src/process_collector.cpp
+    src/tcp_collector.cpp
     src/telemetry_collector.cpp
     src/main.cpp
 )

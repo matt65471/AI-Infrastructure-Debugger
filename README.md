@@ -21,13 +21,14 @@ Current metrics:
 - CPU utilization from `/proc/stat`
 - memory utilization from `/proc/meminfo`
 - network receive/transmit byte rates from `/proc/net/dev`
+- TCP/IP counters from `/proc/net/snmp` and `/proc/net/netstat`
+- disk I/O counters from `/proc/diskstats`
+- top process CPU and memory metrics from `/proc/[pid]`
 
 Not included yet:
 
 - Kubernetes
 - containers/cgroups
-- per-process attribution
-- TCP retransmission stats
 - gRPC exporting
 - storage
 - databases
@@ -41,14 +42,20 @@ agent/
 ├── CMakeLists.txt
 ├── include/
 │   ├── cpu_collector.h
+│   ├── disk_collector.h
 │   ├── mem_collector.h
 │   ├── network_collector.h
+│   ├── process_collector.h
+│   ├── tcp_collector.h
 │   └── telemetry_collector.h
 └── src/
     ├── cpu_collector.cpp
+    ├── disk_collector.cpp
     ├── main.cpp
     ├── mem_collector.cpp
     ├── network_collector.cpp
+    ├── process_collector.cpp
+    ├── tcp_collector.cpp
     └── telemetry_collector.cpp
 
 test_workloads/
@@ -64,6 +71,9 @@ The collectors each own one Linux data source:
 CpuCollector       -> /proc/stat
 MemoryCollector    -> /proc/meminfo
 NetworkCollector   -> /proc/net/dev
+TcpCollector       -> /proc/net/snmp, /proc/net/netstat
+DiskCollector      -> /proc/diskstats
+ProcessCollector   -> /proc/[pid]/stat, /proc/[pid]/status, /proc/[pid]/io
 TelemetryCollector -> coordinates the collectors
 ```
 
@@ -74,7 +84,7 @@ snapshot.
 Example output:
 
 ```text
-cpu_usage_percent=3.20 memory_usage_percent=41.75 memory_available_kb=4045320 network_rx_bytes_per_second=1204 network_tx_bytes_per_second=884
+cpu_usage_percent=3.20 memory_usage_percent=41.75 memory_available_kb=4045320 network_rx_bytes_per_second=1204 network_tx_bytes_per_second=884 tcp_retransmits_per_second=0 disk_read_bytes_per_second=0 disk_write_bytes_per_second=4096 top_cpu=[1234:payment:12.40] top_memory=[1234:payment:524288]
 ```
 
 ## Build And Run
@@ -133,6 +143,19 @@ python3 test_workloads/workload.py net-client --host <vm-ip-address> --port 9000
 The agent currently excludes the loopback interface `lo`, so traffic to
 `127.0.0.1` will not increase the network byte-rate metrics.
 
+Disk write activity:
+
+```bash
+dd if=/dev/zero of=/tmp/telemetry-disk-test bs=1M count=512 conv=fdatasync
+```
+
+Expected effect:
+
+```text
+disk_write_bytes_per_second increases
+disk_writes_per_second may increase
+```
+
 ## Why These Metrics Matter
 
 CPU, memory, and network metrics are the first signals for understanding node
@@ -142,23 +165,25 @@ health.
 High CPU usage        -> app or kernel work may be saturating the node
 Low MemAvailable      -> memory pressure may cause latency or OOM kills
 High network traffic  -> workload or dependency traffic may be increasing
-Network drops/errors  -> later signal for packet loss or interface trouble
+TCP retransmits       -> packet loss, congestion, or unreliable network path
+High disk writes      -> logging, database, or storage pressure
+Top CPU/memory PIDs   -> which process is likely responsible
 ```
 
 These are node-level metrics. They tell us what is happening on the Linux VM as
-a whole, not yet which process, container, pod, or service caused it.
+a whole. Process metrics add the first layer of attribution, but the agent does
+not yet map processes to containers, pods, or services.
 
 ## Roadmap
 
 My next goals:
 
-1. Validate CPU, memory, and network behavior with the test workloads.
-2. Add per-process metrics from `/proc/[pid]`.
-3. Add cgroup/container metrics from `/sys/fs/cgroup`.
-4. Install a lightweight Kubernetes distribution such as k3s on the VM.
-5. Deploy a small test application, for example `frontend -> checkout -> payment`.
-6. Map Linux/cgroup telemetry back to Kubernetes pods and services.
-7. Add fault injection for CPU saturation, memory pressure, network loss, and
+1. Validate CPU, memory, network, TCP, disk, and process behavior.
+2. Add cgroup/container metrics from `/sys/fs/cgroup`.
+3. Install a lightweight Kubernetes distribution such as k3s on the VM.
+4. Deploy a small test application, for example `frontend -> checkout -> payment`.
+5. Map Linux/cgroup telemetry back to Kubernetes pods and services.
+6. Add fault injection for CPU saturation, memory pressure, network loss, and
    service crashes.
 
 The larger goal is to correlate low-level telemetry with service dependencies
