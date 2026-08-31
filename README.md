@@ -8,13 +8,14 @@ The long-term goal is to build a debugger that can monitor distributed
 applications, detect failures, and identify likely root causes from telemetry
 and service dependencies.
 
-For now, the project is intentionally small: a C++ Linux telemetry agent that
-reads raw Linux interfaces directly.
+The project currently contains a C++ Linux telemetry agent and a small
+Kubernetes application used to generate service-to-service behavior.
 
 ## Current Phase
 
-Phase 1 is a normal Linux process that collects node-level telemetry once per
-second.
+The Linux agent collects node-level telemetry once per second. The next VM
+milestone deploys the included Kubernetes demo application on a single-node
+k3s cluster.
 
 Current metrics:
 
@@ -27,8 +28,7 @@ Current metrics:
 
 Not included yet:
 
-- Kubernetes
-- containers/cgroups
+- container/cgroup telemetry and pod attribution
 - gRPC exporting
 - storage
 - databases
@@ -62,6 +62,15 @@ agent/
 test_workloads/
 ├── README.md
 └── workload.py
+
+demo_app/
+├── frontend/
+├── checkout/
+├── payment/
+└── README.md
+
+kubernetes/
+└── demo-app.yaml
 ```
 
 ## How The Agent Works
@@ -177,15 +186,26 @@ not yet map processes to containers, pods, or services.
 
 ## Roadmap
 
-My next goals:
+Project milestones:
 
 1. Validate CPU, memory, network, TCP, disk, and process behavior.
-2. Add cgroup/container metrics from `/sys/fs/cgroup`.
-3. Install a lightweight Kubernetes distribution such as k3s on the VM.
-4. Deploy a small test application, for example `frontend -> checkout -> payment`.
-5. Map Linux/cgroup telemetry back to Kubernetes pods and services.
-6. Add fault injection for CPU saturation, memory pressure, network loss, and
+2. Install k3s on the VM and deploy the included `frontend -> checkout -> payment`
+   application.
+3. Add cgroup/container metrics from `/sys/fs/cgroup`.
+4. Map Linux/cgroup telemetry back to Kubernetes pods and services.
+5. Add fault injection for CPU saturation, memory pressure, network loss, and
    service crashes.
 
 The larger goal is to correlate low-level telemetry with service dependencies
 so the system can eventually distinguish root causes from downstream symptoms.
+
+## Kubernetes Demo Application
+
+The first Kubernetes workload is a three-service FastAPI application:
+
+```text
+frontend -> checkout -> payment
+```
+
+See [`demo_app/README.md`](demo_app/README.md) for the Ubuntu VM, k3s, image
+build, deployment, and verification commands.

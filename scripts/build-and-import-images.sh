@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+image_archive="/tmp/infrastructure-debugger-demo-images.tar"
+
+docker build -t infrastructure-debugger/frontend:v1 "${project_dir}/demo_app/frontend"
+docker build -t infrastructure-debugger/checkout:v1 "${project_dir}/demo_app/checkout"
+docker build -t infrastructure-debugger/payment:v1 "${project_dir}/demo_app/payment"
+
+docker save \
+  --output "${image_archive}" \
+  infrastructure-debugger/frontend:v1 \
+  infrastructure-debugger/checkout:v1 \
+  infrastructure-debugger/payment:v1
+
+sudo k3s ctr --namespace k8s.io images import "${image_archive}"
+sudo k3s ctr --namespace k8s.io images list | grep infrastructure-debugger
