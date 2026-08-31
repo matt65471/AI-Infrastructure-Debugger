@@ -67,6 +67,7 @@ demo_app/
 ├── frontend/
 ├── checkout/
 ├── payment/
+├── requirements.txt
 └── README.md
 
 kubernetes/

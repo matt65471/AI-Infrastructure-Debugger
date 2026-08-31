@@ -10,6 +10,7 @@ browser -> frontend -> checkout -> payment
 Each component is a separate FastAPI application, container image, Kubernetes
 Deployment, pod, and Service. The application is intentionally deterministic:
 payment approval is simulated and no external payment platform is contacted.
+All three applications use the shared `demo_app/requirements.txt` file.
 
 ## 1. Prepare the Ubuntu VM
 
@@ -17,7 +18,7 @@ Install Docker using the Ubuntu package, then allow the current user to run it:
 
 ```bash
 sudo apt update
-sudo apt install -y curl docker.io
+sudo apt install -y build-essential cmake curl docker.io git python3 python3-venv
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER"
 ```
@@ -27,6 +28,16 @@ Confirm Docker works:
 
 ```bash
 docker version
+```
+
+The containers install Python dependencies automatically. To run or inspect the
+FastAPI code directly on the VM instead, create an optional virtual environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install --upgrade pip
+python3 -m pip install -r demo_app/requirements.txt
 ```
 
 Install a single-node k3s cluster:
