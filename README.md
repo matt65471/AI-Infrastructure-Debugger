@@ -49,13 +49,14 @@ agent/
 │   ├── tcp_collector.h
 │   └── telemetry_collector.h
 └── src/
-    ├── cpu_collector.cpp
-    ├── disk_collector.cpp
+    ├── linux/
+    │   ├── cpu_collector.cpp
+    │   ├── disk_collector.cpp
+    │   ├── mem_collector.cpp
+    │   ├── network_collector.cpp
+    │   ├── process_collector.cpp
+    │   └── tcp_collector.cpp
     ├── main.cpp
-    ├── mem_collector.cpp
-    ├── network_collector.cpp
-    ├── process_collector.cpp
-    ├── tcp_collector.cpp
     └── telemetry_collector.cpp
 
 test_workloads/

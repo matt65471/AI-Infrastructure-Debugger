@@ -3,12 +3,12 @@ cmake_minimum_required(VERSION 3.16)
 project(telemetry_agent LANGUAGES CXX)
 
 add_executable(telemetry_agent
-    src/cpu_collector.cpp
-    src/disk_collector.cpp
-    src/mem_collector.cpp
-    src/network_collector.cpp
-    src/process_collector.cpp
-    src/tcp_collector.cpp
+    src/linux/cpu_collector.cpp
+    src/linux/disk_collector.cpp
+    src/linux/mem_collector.cpp
+    src/linux/network_collector.cpp
+    src/linux/process_collector.cpp
+    src/linux/tcp_collector.cpp
     src/telemetry_collector.cpp
     src/main.cpp
 )
