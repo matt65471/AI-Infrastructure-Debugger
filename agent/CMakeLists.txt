@@ -5,6 +5,7 @@ project(telemetry_agent LANGUAGES CXX)
 include(CTest)
 
 add_executable(telemetry_agent
+    src/container_metric_calculator.cpp
     src/linux/cgroup_collector.cpp
     src/linux/cpu_collector.cpp
     src/linux/disk_collector.cpp
@@ -35,4 +36,18 @@ if(BUILD_TESTING)
         target_compile_options(cgroup_collector_test PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME cgroup_collector_test COMMAND cgroup_collector_test)
+
+    add_executable(container_metric_calculator_test
+        tests/container_metric_calculator_test.cpp
+        src/container_metric_calculator.cpp
+    )
+    target_include_directories(container_metric_calculator_test PRIVATE include)
+    target_compile_features(container_metric_calculator_test PRIVATE cxx_std_17)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(container_metric_calculator_test PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(
+        NAME container_metric_calculator_test
+        COMMAND container_metric_calculator_test
+    )
 endif()

@@ -167,7 +167,11 @@ TelemetryCollector::TelemetryCollector()
       previous_network_sample_(network_collector_.read_sample()),
       previous_tcp_sample_(tcp_collector_.read_sample()),
       previous_disk_sample_(disk_collector_.read_sample()),
-      previous_process_sample_(process_collector_.read_sample()) {}
+      previous_process_sample_(process_collector_.read_sample()) {
+    previous_cgroup_sample_ = cgroup_collector_.read_sample(
+        collect_process_ids(previous_process_sample_));
+    previous_cgroup_sample_time_ = std::chrono::steady_clock::now();
+}
 
 TelemetrySnapshot TelemetryCollector::collect() {
     const CpuSample current_cpu_sample = cpu_collector_.read_sample();
@@ -177,6 +181,14 @@ TelemetrySnapshot TelemetryCollector::collect() {
     const DiskSample current_disk_sample = disk_collector_.read_sample();
     const ProcessCollectionSample current_process_sample =
         process_collector_.read_sample();
+    const CgroupCollectionSample current_cgroup_sample =
+        cgroup_collector_.read_sample(collect_process_ids(current_process_sample));
+    const auto current_cgroup_sample_time = std::chrono::steady_clock::now();
+    const std::uint64_t cgroup_elapsed_usec =
+        static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                current_cgroup_sample_time - previous_cgroup_sample_time_)
+                .count());
     const std::uint64_t system_cpu_delta = positive_delta(
         total_cpu_time(previous_cpu_sample_),
         total_cpu_time(current_cpu_sample));
@@ -241,14 +253,20 @@ TelemetrySnapshot TelemetryCollector::collect() {
         system_cpu_delta);
     snapshot.top_cpu_processes = top_by_cpu(process_metrics);
     snapshot.top_memory_processes = top_by_memory(process_metrics);
-    snapshot.cgroups = cgroup_collector_.read_sample(
-        collect_process_ids(current_process_sample));
+    snapshot.containers = calculate_container_metrics(
+        previous_cgroup_sample_,
+        current_cgroup_sample,
+        cgroup_elapsed_usec,
+        snapshot.node.timestamp_unix_ms);
+    snapshot.cgroups = current_cgroup_sample;
 
     previous_cpu_sample_ = current_cpu_sample;
     previous_network_sample_ = current_network_sample;
     previous_tcp_sample_ = current_tcp_sample;
     previous_disk_sample_ = current_disk_sample;
     previous_process_sample_ = current_process_sample;
+    previous_cgroup_sample_ = current_cgroup_sample;
+    previous_cgroup_sample_time_ = current_cgroup_sample_time;
 
     return snapshot;
 }

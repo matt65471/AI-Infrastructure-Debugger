@@ -26,10 +26,11 @@ Current metrics:
 - disk I/O counters from `/proc/diskstats`
 - top process CPU and memory metrics from `/proc/[pid]`
 - raw Kubernetes container cgroup v2 counters from `/sys/fs/cgroup`
+- calculated per-container CPU, throttling, memory, and OOM metrics
 
 Not included yet:
 
-- calculated per-container rates and Kubernetes pod attribution
+- Kubernetes pod and workload attribution
 - gRPC exporting
 - storage
 - databases
@@ -44,6 +45,7 @@ agent/
 ├── include/
 │   ├── cpu_collector.h
 │   ├── cgroup_collector.h
+│   ├── container_metric_calculator.h
 │   ├── disk_collector.h
 │   ├── mem_collector.h
 │   ├── network_collector.h
@@ -51,6 +53,7 @@ agent/
 │   ├── tcp_collector.h
 │   └── telemetry_collector.h
 └── src/
+    ├── container_metric_calculator.cpp
     ├── linux/
     │   ├── cgroup_collector.cpp
     │   ├── cpu_collector.cpp
@@ -92,11 +95,12 @@ ProcessCollector   -> /proc/[pid]/stat, /proc/[pid]/status, /proc/[pid]/io
 TelemetryCollector -> coordinates the collectors
 ```
 
-The cgroup collector currently detects cgroup v2, discovers host processes in
-`kubepods` cgroups, and reads raw `cpu.stat`, `memory.current`, `memory.max`,
-`memory.events`, and `cgroup.procs` values. It extracts container IDs when they
-are present in containerd cgroup paths. It does not yet map those IDs to pod or
-Deployment names.
+The cgroup collector detects cgroup v2, discovers host processes in `kubepods`
+cgroups, and reads raw `cpu.stat`, `memory.current`, `memory.max`,
+`memory.events`, and `cgroup.procs` values. The container metric calculator
+matches consecutive samples by full container ID and calculates CPU usage,
+throttling and OOM deltas, and memory utilization. It does not yet map those IDs
+to pod or Deployment names.
 
 `main.cpp` does not parse Linux files directly. It creates a
 `TelemetryCollector`, calls `collect()` once per second, and prints the combined
@@ -105,7 +109,7 @@ snapshot.
 Example output:
 
 ```text
-timestamp_unix_ms=1788217200000 node=ubuntu-vm cpu_usage_percent=3.20 memory_usage_percent=41.75 memory_available_kb=4045320 network_rx_bytes_per_second=1204 network_tx_bytes_per_second=884 tcp_retransmits_per_second=0 disk_read_bytes_per_second=0 disk_write_bytes_per_second=4096 top_cpu=[1234:payment:12.40] top_memory=[1234:payment:524288] cgroup_v2=true kubernetes_cgroups=[...]
+timestamp_unix_ms=1788217200000 node=ubuntu-vm cpu_usage_percent=3.20 memory_usage_percent=41.75 memory_available_kb=4045320 network_rx_bytes_per_second=1204 network_tx_bytes_per_second=884 tcp_retransmits_per_second=0 disk_read_bytes_per_second=0 disk_write_bytes_per_second=4096 top_cpu=[1234:payment:12.40] top_memory=[1234:payment:524288] cgroup_v2=true containers=[...]
 ```
 
 Each `TelemetrySnapshot` contains one explicit `NodeMetric` plus separate
@@ -140,16 +144,19 @@ cmake --build agent/build
 
 Stop the agent with `Ctrl+C`.
 
-With k3s and the demo application running, cgroup discovery is working when the
-output contains:
+With k3s and the demo application running, cgroup discovery and container
+calculation are working when the output contains:
 
 ```text
-cgroup_v2=true kubernetes_cgroups=[...]
+cgroup_v2=true containers=[...]
 ```
 
-Each entry reports a shortened container ID, its host cgroup path, cumulative
-CPU and throttling counters, current and maximum memory, OOM kill count, and
-host PIDs. Run the agent with `sudo` only if the VM restricts access to other
+Each entry reports a shortened container ID, host cgroup path, CPU percentage,
+cumulative CPU time, throttling deltas, current and maximum memory, memory
+percentage, OOM deltas, and host PIDs. `100%` CPU means one fully used core and
+a multi-core container can exceed `100%`. A newly seen container reports `na`
+for CPU until it has two samples; unlimited memory reports `na` for memory
+percentage. Run the agent with `sudo` only if the VM restricts access to other
 processes or cgroup files:
 
 ```bash

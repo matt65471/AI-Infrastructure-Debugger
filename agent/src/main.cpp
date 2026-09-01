@@ -53,30 +53,49 @@ std::string short_container_id(const std::string& container_id) {
                : container_id.substr(0, kShortIdLength);
 }
 
-std::string format_cgroup_list(const CgroupCollectionSample& collection) {
+std::string format_container_list(
+    const std::vector<ContainerMetric>& containers) {
     std::ostringstream stream;
     stream << '[';
-    for (std::size_t index = 0;
-         index < collection.kubernetes_cgroups.size();
-         ++index) {
+    for (std::size_t index = 0; index < containers.size(); ++index) {
         if (index > 0) {
             stream << ',';
         }
 
-        const CgroupSample& cgroup = collection.kubernetes_cgroups[index];
-        stream << "{container_id=" << short_container_id(cgroup.container_id)
-               << ",path=" << cgroup.path
-               << ",cpu_usage_usec=" << cgroup.cpu.usage_usec
-               << ",cpu_throttled_usec=" << cgroup.cpu.throttled_usec
-               << ",memory_current_bytes=" << cgroup.memory_current_bytes
+        const ContainerMetric& container = containers[index];
+        stream << "{container_id="
+               << short_container_id(container.container_id)
+               << ",path=" << container.cgroup_path
+               << ",cpu_usage_percent=";
+        if (container.cpu_usage_available) {
+            stream << std::fixed << std::setprecision(2)
+                   << container.cpu_usage_percent;
+        } else {
+            stream << "na";
+        }
+        stream << ",cpu_usage_usec=" << container.cpu_usage_usec
+               << ",throttled_periods_delta="
+               << container.throttled_periods_delta
+               << ",throttled_usec_delta="
+               << container.throttled_usec_delta
+               << ",memory_current_bytes="
+               << container.memory_current_bytes
                << ",memory_max=";
-        if (cgroup.memory_is_unlimited) {
+        if (container.memory_is_unlimited) {
             stream << "max";
         } else {
-            stream << cgroup.memory_max_bytes;
+            stream << container.memory_max_bytes;
         }
-        stream << ",oom_kills=" << cgroup.memory_events.oom_kill
-               << ",pids=" << format_pid_list(cgroup.process_ids) << '}';
+        stream << ",memory_usage_percent=";
+        if (container.memory_usage_percent_available) {
+            stream << std::fixed << std::setprecision(2)
+                   << container.memory_usage_percent;
+        } else {
+            stream << "na";
+        }
+        stream << ",oom_delta=" << container.oom_delta
+               << ",oom_kill_delta=" << container.oom_kill_delta
+               << ",pids=" << format_pid_list(container.process_ids) << '}';
     }
     stream << ']';
     return stream.str();
@@ -135,8 +154,8 @@ int main() {
                       << format_process_list(snapshot.top_memory_processes, false)
                       << " cgroup_v2="
                       << (snapshot.cgroups.cgroup_v2_available ? "true" : "false")
-                      << " kubernetes_cgroups="
-                      << format_cgroup_list(snapshot.cgroups)
+                      << " containers="
+                      << format_container_list(snapshot.containers)
                       << '\n';
         }
     } catch (const std::exception& error) {

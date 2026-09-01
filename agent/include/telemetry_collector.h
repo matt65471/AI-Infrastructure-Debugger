@@ -2,6 +2,7 @@
 #define TELEMETRY_COLLECTOR_H
 
 #include "cgroup_collector.h"
+#include "container_metric_calculator.h"
 #include "cpu_collector.h"
 #include "disk_collector.h"
 #include "mem_collector.h"
@@ -9,6 +10,7 @@
 #include "process_collector.h"
 #include "tcp_collector.h"
 
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -51,6 +53,7 @@ struct TelemetrySnapshot {
     NodeMetric node;
     std::vector<ProcessMetric> top_cpu_processes;
     std::vector<ProcessMetric> top_memory_processes;
+    std::vector<ContainerMetric> containers;
     CgroupCollectionSample cgroups;
 };
 
@@ -73,6 +76,8 @@ private:
     TcpSample previous_tcp_sample_;
     DiskSample previous_disk_sample_;
     ProcessCollectionSample previous_process_sample_;
+    CgroupCollectionSample previous_cgroup_sample_;
+    std::chrono::steady_clock::time_point previous_cgroup_sample_time_;
 };
 
 #endif
