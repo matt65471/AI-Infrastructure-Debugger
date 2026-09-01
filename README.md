@@ -25,10 +25,11 @@ Current metrics:
 - TCP/IP counters from `/proc/net/snmp` and `/proc/net/netstat`
 - disk I/O counters from `/proc/diskstats`
 - top process CPU and memory metrics from `/proc/[pid]`
+- raw Kubernetes container cgroup v2 counters from `/sys/fs/cgroup`
 
 Not included yet:
 
-- container/cgroup telemetry and pod attribution
+- calculated per-container rates and Kubernetes pod attribution
 - gRPC exporting
 - storage
 - databases
@@ -42,6 +43,7 @@ agent/
 ├── CMakeLists.txt
 ├── include/
 │   ├── cpu_collector.h
+│   ├── cgroup_collector.h
 │   ├── disk_collector.h
 │   ├── mem_collector.h
 │   ├── network_collector.h
@@ -50,6 +52,7 @@ agent/
 │   └── telemetry_collector.h
 └── src/
     ├── linux/
+    │   ├── cgroup_collector.cpp
     │   ├── cpu_collector.cpp
     │   ├── disk_collector.cpp
     │   ├── mem_collector.cpp
@@ -80,6 +83,7 @@ The collectors each own one Linux data source:
 
 ```text
 CpuCollector       -> /proc/stat
+CgroupCollector    -> /proc/[pid]/cgroup, /sys/fs/cgroup
 MemoryCollector    -> /proc/meminfo
 NetworkCollector   -> /proc/net/dev
 TcpCollector       -> /proc/net/snmp, /proc/net/netstat
@@ -87,6 +91,12 @@ DiskCollector      -> /proc/diskstats
 ProcessCollector   -> /proc/[pid]/stat, /proc/[pid]/status, /proc/[pid]/io
 TelemetryCollector -> coordinates the collectors
 ```
+
+The cgroup collector currently detects cgroup v2, discovers host processes in
+`kubepods` cgroups, and reads raw `cpu.stat`, `memory.current`, `memory.max`,
+`memory.events`, and `cgroup.procs` values. It extracts container IDs when they
+are present in containerd cgroup paths. It does not yet map those IDs to pod or
+Deployment names.
 
 `main.cpp` does not parse Linux files directly. It creates a
 `TelemetryCollector`, calls `collect()` once per second, and prints the combined
@@ -122,6 +132,22 @@ cmake --build agent/build
 ```
 
 Stop the agent with `Ctrl+C`.
+
+With k3s and the demo application running, cgroup discovery is working when the
+output contains:
+
+```text
+cgroup_v2=true kubernetes_cgroups=[...]
+```
+
+Each entry reports a shortened container ID, its host cgroup path, cumulative
+CPU and throttling counters, current and maximum memory, OOM kill count, and
+host PIDs. Run the agent with `sudo` only if the VM restricts access to other
+processes or cgroup files:
+
+```bash
+sudo ./agent/build/telemetry_agent
+```
 
 ## Test Workloads
 
@@ -192,7 +218,7 @@ Project milestones:
 1. Validate CPU, memory, network, TCP, disk, and process behavior.
 2. Install k3s on the VM and deploy the included `frontend -> checkout -> payment`
    application.
-3. Add cgroup/container metrics from `/sys/fs/cgroup`.
+3. Calculate per-container rates from the raw cgroup counters.
 4. Map Linux/cgroup telemetry back to Kubernetes pods and services.
 5. Add fault injection for CPU saturation, memory pressure, network loss, and
    service crashes.

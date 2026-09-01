@@ -133,6 +133,15 @@ std::vector<ProcessMetric> top_by_memory(std::vector<ProcessMetric> metrics) {
     return metrics;
 }
 
+std::vector<int> collect_process_ids(const ProcessCollectionSample& sample) {
+    std::vector<int> process_ids;
+    process_ids.reserve(sample.processes.size());
+    for (const ProcessSample& process : sample.processes) {
+        process_ids.push_back(process.pid);
+    }
+    return process_ids;
+}
+
 }  // namespace
 
 TelemetryCollector::TelemetryCollector()
@@ -212,6 +221,8 @@ TelemetrySnapshot TelemetryCollector::collect() {
         system_cpu_delta);
     snapshot.top_cpu_processes = top_by_cpu(process_metrics);
     snapshot.top_memory_processes = top_by_memory(process_metrics);
+    snapshot.cgroups = cgroup_collector_.read_sample(
+        collect_process_ids(current_process_sample));
 
     previous_cpu_sample_ = current_cpu_sample;
     previous_network_sample_ = current_network_sample;

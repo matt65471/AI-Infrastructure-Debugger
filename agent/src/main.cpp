@@ -33,6 +33,55 @@ std::string format_process_list(const std::vector<ProcessMetric>& processes,
     return stream.str();
 }
 
+std::string format_pid_list(const std::vector<int>& process_ids) {
+    std::ostringstream stream;
+    stream << '[';
+    for (std::size_t index = 0; index < process_ids.size(); ++index) {
+        if (index > 0) {
+            stream << ',';
+        }
+        stream << process_ids[index];
+    }
+    stream << ']';
+    return stream.str();
+}
+
+std::string short_container_id(const std::string& container_id) {
+    constexpr std::size_t kShortIdLength = 12;
+    return container_id.size() <= kShortIdLength
+               ? container_id
+               : container_id.substr(0, kShortIdLength);
+}
+
+std::string format_cgroup_list(const CgroupCollectionSample& collection) {
+    std::ostringstream stream;
+    stream << '[';
+    for (std::size_t index = 0;
+         index < collection.kubernetes_cgroups.size();
+         ++index) {
+        if (index > 0) {
+            stream << ',';
+        }
+
+        const CgroupSample& cgroup = collection.kubernetes_cgroups[index];
+        stream << "{container_id=" << short_container_id(cgroup.container_id)
+               << ",path=" << cgroup.path
+               << ",cpu_usage_usec=" << cgroup.cpu.usage_usec
+               << ",cpu_throttled_usec=" << cgroup.cpu.throttled_usec
+               << ",memory_current_bytes=" << cgroup.memory_current_bytes
+               << ",memory_max=";
+        if (cgroup.memory_is_unlimited) {
+            stream << "max";
+        } else {
+            stream << cgroup.memory_max_bytes;
+        }
+        stream << ",oom_kills=" << cgroup.memory_events.oom_kill
+               << ",pids=" << format_pid_list(cgroup.process_ids) << '}';
+    }
+    stream << ']';
+    return stream.str();
+}
+
 }  // namespace
 
 int main() {
@@ -81,6 +130,10 @@ int main() {
                       << format_process_list(snapshot.top_cpu_processes, true)
                       << " top_memory="
                       << format_process_list(snapshot.top_memory_processes, false)
+                      << " cgroup_v2="
+                      << (snapshot.cgroups.cgroup_v2_available ? "true" : "false")
+                      << " kubernetes_cgroups="
+                      << format_cgroup_list(snapshot.cgroups)
                       << '\n';
         }
     } catch (const std::exception& error) {

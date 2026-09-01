@@ -1,6 +1,7 @@
 #ifndef TELEMETRY_COLLECTOR_H
 #define TELEMETRY_COLLECTOR_H
 
+#include "cgroup_collector.h"
 #include "cpu_collector.h"
 #include "disk_collector.h"
 #include "mem_collector.h"
@@ -44,6 +45,7 @@ struct TelemetrySnapshot {
     std::uint64_t disk_io_time_ms_delta = 0;
     std::vector<ProcessMetric> top_cpu_processes;
     std::vector<ProcessMetric> top_memory_processes;
+    CgroupCollectionSample cgroups;
 };
 
 class TelemetryCollector {
@@ -58,6 +60,7 @@ private:
     TcpCollector tcp_collector_;
     DiskCollector disk_collector_;
     ProcessCollector process_collector_;
+    CgroupCollector cgroup_collector_;
     CpuSample previous_cpu_sample_;
     NetworkSample previous_network_sample_;
     TcpSample previous_tcp_sample_;
