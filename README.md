@@ -105,8 +105,15 @@ snapshot.
 Example output:
 
 ```text
-cpu_usage_percent=3.20 memory_usage_percent=41.75 memory_available_kb=4045320 network_rx_bytes_per_second=1204 network_tx_bytes_per_second=884 tcp_retransmits_per_second=0 disk_read_bytes_per_second=0 disk_write_bytes_per_second=4096 top_cpu=[1234:payment:12.40] top_memory=[1234:payment:524288]
+timestamp_unix_ms=1788217200000 node=ubuntu-vm cpu_usage_percent=3.20 memory_usage_percent=41.75 memory_available_kb=4045320 network_rx_bytes_per_second=1204 network_tx_bytes_per_second=884 tcp_retransmits_per_second=0 disk_read_bytes_per_second=0 disk_write_bytes_per_second=4096 top_cpu=[1234:payment:12.40] top_memory=[1234:payment:524288] cgroup_v2=true kubernetes_cgroups=[...]
 ```
+
+Each `TelemetrySnapshot` contains one explicit `NodeMetric` plus separate
+process and cgroup collections. The node record adds the collection time in
+Unix milliseconds and the Linux hostname to the existing host-wide CPU,
+memory, network, TCP, and disk metrics. The hostname is local Linux identity;
+it will be validated against the Kubernetes node name when Kubernetes metadata
+mapping is added.
 
 ## Build And Run
 

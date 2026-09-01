@@ -25,7 +25,9 @@ struct ProcessMetric {
     std::uint64_t write_bytes_per_second = 0;
 };
 
-struct TelemetrySnapshot {
+struct NodeMetric {
+    std::uint64_t timestamp_unix_ms = 0;
+    std::string hostname;
     double cpu_usage_percent = 0.0;
     double memory_usage_percent = 0.0;
     std::uint64_t memory_available_kb = 0;
@@ -43,6 +45,10 @@ struct TelemetrySnapshot {
     std::uint64_t disk_reads_per_second = 0;
     std::uint64_t disk_writes_per_second = 0;
     std::uint64_t disk_io_time_ms_delta = 0;
+};
+
+struct TelemetrySnapshot {
+    NodeMetric node;
     std::vector<ProcessMetric> top_cpu_processes;
     std::vector<ProcessMetric> top_memory_processes;
     CgroupCollectionSample cgroups;
@@ -54,6 +60,7 @@ public:
     TelemetrySnapshot collect();
 
 private:
+    std::string hostname_;
     CpuCollector cpu_collector_;
     MemoryCollector memory_collector_;
     NetworkCollector network_collector_;

@@ -1,12 +1,29 @@
 #include "telemetry_collector.h"
 
 #include <algorithm>
+#include <chrono>
+#include <string>
 #include <unordered_map>
+#include <unistd.h>
 
 namespace {
 
 constexpr std::uint64_t kSectorSizeBytes = 512;
 constexpr std::size_t kTopProcessCount = 5;
+
+std::string read_hostname() {
+    char hostname[256] = {};
+    if (gethostname(hostname, sizeof(hostname) - 1) != 0) {
+        return "unknown";
+    }
+    return hostname;
+}
+
+std::uint64_t current_time_unix_ms() {
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+}
 
 std::uint64_t total_cpu_time(const CpuSample& sample) {
     return sample.user + sample.nice + sample.system + sample.idle +
@@ -145,7 +162,8 @@ std::vector<int> collect_process_ids(const ProcessCollectionSample& sample) {
 }  // namespace
 
 TelemetryCollector::TelemetryCollector()
-    : previous_cpu_sample_(cpu_collector_.read_sample()),
+    : hostname_(read_hostname()),
+      previous_cpu_sample_(cpu_collector_.read_sample()),
       previous_network_sample_(network_collector_.read_sample()),
       previous_tcp_sample_(tcp_collector_.read_sample()),
       previous_disk_sample_(disk_collector_.read_sample()),
@@ -164,54 +182,56 @@ TelemetrySnapshot TelemetryCollector::collect() {
         total_cpu_time(current_cpu_sample));
 
     TelemetrySnapshot snapshot;
-    snapshot.cpu_usage_percent = cpu_collector_.calculate_utilization(
+    snapshot.node.timestamp_unix_ms = current_time_unix_ms();
+    snapshot.node.hostname = hostname_;
+    snapshot.node.cpu_usage_percent = cpu_collector_.calculate_utilization(
         previous_cpu_sample_,
         current_cpu_sample);
-    snapshot.memory_usage_percent =
+    snapshot.node.memory_usage_percent =
         memory_collector_.calculate_utilization(memory_sample);
-    snapshot.memory_available_kb = memory_sample.mem_available_kb;
-    snapshot.network_rx_bytes_per_second =
+    snapshot.node.memory_available_kb = memory_sample.mem_available_kb;
+    snapshot.node.network_rx_bytes_per_second =
         network_collector_.calculate_rx_bytes_per_second(
             previous_network_sample_,
             current_network_sample);
-    snapshot.network_tx_bytes_per_second =
+    snapshot.node.network_tx_bytes_per_second =
         network_collector_.calculate_tx_bytes_per_second(
             previous_network_sample_,
             current_network_sample);
-    snapshot.tcp_retransmits_per_second = positive_delta(
+    snapshot.node.tcp_retransmits_per_second = positive_delta(
         previous_tcp_sample_.retransmitted_segments,
         current_tcp_sample.retransmitted_segments);
-    snapshot.tcp_in_segments_per_second = positive_delta(
+    snapshot.node.tcp_in_segments_per_second = positive_delta(
         previous_tcp_sample_.in_segments,
         current_tcp_sample.in_segments);
-    snapshot.tcp_out_segments_per_second = positive_delta(
+    snapshot.node.tcp_out_segments_per_second = positive_delta(
         previous_tcp_sample_.out_segments,
         current_tcp_sample.out_segments);
-    snapshot.tcp_reset_count_delta = positive_delta(
+    snapshot.node.tcp_reset_count_delta = positive_delta(
         previous_tcp_sample_.resets_sent,
         current_tcp_sample.resets_sent);
-    snapshot.tcp_listen_overflows_delta = positive_delta(
+    snapshot.node.tcp_listen_overflows_delta = positive_delta(
         previous_tcp_sample_.listen_overflows,
         current_tcp_sample.listen_overflows);
-    snapshot.tcp_listen_drops_delta = positive_delta(
+    snapshot.node.tcp_listen_drops_delta = positive_delta(
         previous_tcp_sample_.listen_drops,
         current_tcp_sample.listen_drops);
-    snapshot.tcp_timeouts_delta = positive_delta(
+    snapshot.node.tcp_timeouts_delta = positive_delta(
         previous_tcp_sample_.timeouts,
         current_tcp_sample.timeouts);
-    snapshot.disk_read_bytes_per_second = positive_delta(
+    snapshot.node.disk_read_bytes_per_second = positive_delta(
         aggregate_read_bytes(previous_disk_sample_),
         aggregate_read_bytes(current_disk_sample));
-    snapshot.disk_write_bytes_per_second = positive_delta(
+    snapshot.node.disk_write_bytes_per_second = positive_delta(
         aggregate_write_bytes(previous_disk_sample_),
         aggregate_write_bytes(current_disk_sample));
-    snapshot.disk_reads_per_second = positive_delta(
+    snapshot.node.disk_reads_per_second = positive_delta(
         aggregate_reads(previous_disk_sample_),
         aggregate_reads(current_disk_sample));
-    snapshot.disk_writes_per_second = positive_delta(
+    snapshot.node.disk_writes_per_second = positive_delta(
         aggregate_writes(previous_disk_sample_),
         aggregate_writes(current_disk_sample));
-    snapshot.disk_io_time_ms_delta = positive_delta(
+    snapshot.node.disk_io_time_ms_delta = positive_delta(
         aggregate_io_time_ms(previous_disk_sample_),
         aggregate_io_time_ms(current_disk_sample));
 
