@@ -8,6 +8,7 @@
 #include "kubernetes_metadata_collector.h"
 #include "mem_collector.h"
 #include "network_collector.h"
+#include "pod_metric_aggregator.h"
 #include "process_collector.h"
 #include "tcp_collector.h"
 
@@ -55,6 +56,7 @@ struct TelemetrySnapshot {
     std::vector<ProcessMetric> top_cpu_processes;
     std::vector<ProcessMetric> top_memory_processes;
     std::vector<ContainerMetric> containers;
+    std::vector<PodMetric> pods;
     CgroupCollectionSample cgroups;
     bool kubernetes_metadata_available = false;
 };

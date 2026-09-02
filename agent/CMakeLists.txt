@@ -7,6 +7,7 @@ include(CTest)
 add_executable(telemetry_agent
     src/container_metric_calculator.cpp
     src/kubernetes_metadata_collector.cpp
+    src/pod_metric_aggregator.cpp
     src/linux/cgroup_collector.cpp
     src/linux/cpu_collector.cpp
     src/linux/disk_collector.cpp
@@ -64,5 +65,19 @@ if(BUILD_TESTING)
     add_test(
         NAME kubernetes_metadata_collector_test
         COMMAND kubernetes_metadata_collector_test
+    )
+
+    add_executable(pod_metric_aggregator_test
+        tests/pod_metric_aggregator_test.cpp
+        src/pod_metric_aggregator.cpp
+    )
+    target_include_directories(pod_metric_aggregator_test PRIVATE include)
+    target_compile_features(pod_metric_aggregator_test PRIVATE cxx_std_17)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(pod_metric_aggregator_test PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(
+        NAME pod_metric_aggregator_test
+        COMMAND pod_metric_aggregator_test
     )
 endif()

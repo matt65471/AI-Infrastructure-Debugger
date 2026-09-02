@@ -53,6 +53,29 @@ std::string short_container_id(const std::string& container_id) {
                : container_id.substr(0, kShortIdLength);
 }
 
+std::string format_string_list(const std::vector<std::string>& values) {
+    std::ostringstream stream;
+    stream << '[';
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        if (index > 0) {
+            stream << ',';
+        }
+        stream << values[index];
+    }
+    stream << ']';
+    return stream.str();
+}
+
+std::string format_container_id_list(
+    const std::vector<std::string>& container_ids) {
+    std::vector<std::string> short_ids;
+    short_ids.reserve(container_ids.size());
+    for (const std::string& container_id : container_ids) {
+        short_ids.push_back(short_container_id(container_id));
+    }
+    return format_string_list(short_ids);
+}
+
 std::string format_container_list(
     const std::vector<ContainerMetric>& containers) {
     std::ostringstream stream;
@@ -118,6 +141,65 @@ std::string format_container_list(
     return stream.str();
 }
 
+std::string format_pod_list(const std::vector<PodMetric>& pods) {
+    std::ostringstream stream;
+    stream << '[';
+    for (std::size_t index = 0; index < pods.size(); ++index) {
+        if (index > 0) {
+            stream << ',';
+        }
+
+        const PodMetric& pod = pods[index];
+        stream << "{node=" << pod.node_name
+               << ",namespace=" << pod.namespace_name
+               << ",pod=" << pod.pod_name
+               << ",pod_uid=" << pod.pod_uid
+               << ",workload=" << pod.workload_kind << '/'
+               << pod.workload_name
+               << ",phase=" << pod.pod_phase
+               << ",ready="
+               << (pod.all_containers_ready ? "true" : "false")
+               << ",container_count=" << pod.container_count
+               << ",container_names="
+               << format_string_list(pod.container_names)
+               << ",container_ids="
+               << format_container_id_list(pod.container_ids)
+               << ",cpu_usage_percent=";
+        if (pod.cpu_usage_available) {
+            stream << std::fixed << std::setprecision(2)
+                   << pod.cpu_usage_percent;
+        } else {
+            stream << "na";
+        }
+        stream << ",cpu_usage_usec=" << pod.cpu_usage_usec
+               << ",throttled_periods_delta="
+               << pod.throttled_periods_delta
+               << ",throttled_usec_delta=" << pod.throttled_usec_delta
+               << ",memory_current_bytes=" << pod.memory_current_bytes
+               << ",memory_max=";
+        if (pod.memory_is_unlimited) {
+            stream << "max";
+        } else if (pod.memory_limit_available) {
+            stream << pod.memory_max_bytes;
+        } else {
+            stream << "na";
+        }
+        stream << ",memory_usage_percent=";
+        if (pod.memory_usage_percent_available) {
+            stream << std::fixed << std::setprecision(2)
+                   << pod.memory_usage_percent;
+        } else {
+            stream << "na";
+        }
+        stream << ",oom_delta=" << pod.oom_delta
+               << ",oom_kill_delta=" << pod.oom_kill_delta
+               << ",restarts=" << pod.restart_count
+               << ",pids=" << format_pid_list(pod.process_ids) << '}';
+    }
+    stream << ']';
+    return stream.str();
+}
+
 }  // namespace
 
 int main() {
@@ -177,6 +259,7 @@ int main() {
                               : "unavailable")
                       << " containers="
                       << format_container_list(snapshot.containers)
+                      << " pods=" << format_pod_list(snapshot.pods)
                       << '\n';
         }
     } catch (const std::exception& error) {

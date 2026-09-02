@@ -28,6 +28,7 @@ Current metrics:
 - raw Kubernetes container cgroup v2 counters from `/sys/fs/cgroup`
 - calculated per-container CPU, throttling, memory, and OOM metrics
 - Kubernetes node, workload, pod, and container identity joined by container ID
+- pod-level CPU, memory, throttling, OOM, restart, container, and process aggregates
 
 Not included yet:
 
@@ -51,12 +52,14 @@ agent/
 │   ├── kubernetes_metadata_collector.h
 │   ├── mem_collector.h
 │   ├── network_collector.h
+│   ├── pod_metric_aggregator.h
 │   ├── process_collector.h
 │   ├── tcp_collector.h
 │   └── telemetry_collector.h
 └── src/
     ├── container_metric_calculator.cpp
     ├── kubernetes_metadata_collector.cpp
+    ├── pod_metric_aggregator.cpp
     ├── linux/
     │   ├── cgroup_collector.cpp
     │   ├── cpu_collector.cpp
@@ -109,6 +112,13 @@ and owning workload. For this VM stage it invokes the local k3s `kubectl`; a
 future agent service will use the Kubernetes API directly with a service
 account.
 
+The pod metric aggregator groups Kubernetes-matched containers by pod UID. It
+sums CPU, memory, throttling, OOM, and restart values, combines container IDs
+and host PIDs, and requires every included container to be ready before the pod
+aggregate is marked ready. The existing node metrics continue to come directly
+from Linux host counters; they are not calculated by summing pods, which would
+omit Kubernetes and host overhead.
+
 `main.cpp` does not parse Linux files directly. It creates a
 `TelemetryCollector`, calls `collect()` once per second, and prints the combined
 snapshot.
@@ -116,7 +126,7 @@ snapshot.
 Example output:
 
 ```text
-timestamp_unix_ms=1788217200000 node=ubuntu-vm cpu_usage_percent=3.20 memory_usage_percent=41.75 memory_available_kb=4045320 network_rx_bytes_per_second=1204 network_tx_bytes_per_second=884 tcp_retransmits_per_second=0 disk_read_bytes_per_second=0 disk_write_bytes_per_second=4096 top_cpu=[1234:payment:12.40] top_memory=[1234:payment:524288] cgroup_v2=true kubernetes_metadata=available containers=[...]
+timestamp_unix_ms=1788217200000 node=ubuntu-vm cpu_usage_percent=3.20 memory_usage_percent=41.75 memory_available_kb=4045320 network_rx_bytes_per_second=1204 network_tx_bytes_per_second=884 tcp_retransmits_per_second=0 disk_read_bytes_per_second=0 disk_write_bytes_per_second=4096 top_cpu=[1234:payment:12.40] top_memory=[1234:payment:524288] cgroup_v2=true kubernetes_metadata=available containers=[...] pods=[...]
 ```
 
 Each `TelemetrySnapshot` contains one explicit `NodeMetric` plus separate
@@ -150,11 +160,11 @@ sudo ./agent/build/telemetry_agent
 
 Stop the agent with `Ctrl+C`.
 
-With k3s and the demo application running, cgroup discovery and container
-calculation are working when the output contains:
+With k3s and the demo application running, container calculation, Kubernetes
+identity, and pod aggregation are working when the output contains:
 
 ```text
-cgroup_v2=true kubernetes_metadata=available containers=[...]
+cgroup_v2=true kubernetes_metadata=available containers=[...] pods=[...]
 ```
 
 Each entry reports a shortened container ID, host cgroup path, CPU percentage,
@@ -177,6 +187,14 @@ kubernetes={node=ubuntu-vm,namespace=infrastructure-demo,pod=payment-...,pod_uid
 
 Pod sandbox containers and containers that have not appeared in the latest
 Kubernetes metadata refresh remain visible with `kubernetes=unmatched`.
+Unmatched containers are not included in pod aggregates because they have no
+reliable pod UID.
+
+A pod aggregate resembles:
+
+```text
+{node=ubuntu-vm,namespace=infrastructure-demo,pod=payment-...,pod_uid=...,workload=Deployment/payment,phase=Running,ready=true,container_count=1,container_names=[payment],container_ids=[91ab2345cdef],cpu_usage_percent=12.40,memory_current_bytes=73400320,memory_max=134217728,memory_usage_percent=54.69,oom_kill_delta=0,restarts=0,pids=[1488]}
+```
 
 ## Test Workloads
 
@@ -249,8 +267,9 @@ Project milestones:
 2. Install k3s on the VM and deploy the included `frontend -> checkout -> payment`
    application.
 3. Calculate per-container rates from the raw cgroup counters.
-4. Collect Kubernetes lifecycle events and map Services to selected pods.
-5. Add fault injection for CPU saturation, memory pressure, network loss, and
+4. Aggregate pod metrics into workload/Deployment summaries.
+5. Collect Kubernetes lifecycle events and map Services to selected pods.
+6. Add fault injection for CPU saturation, memory pressure, network loss, and
    service crashes.
 
 The larger goal is to correlate low-level telemetry with service dependencies

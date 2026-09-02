@@ -278,6 +278,7 @@ TelemetrySnapshot TelemetryCollector::collect() {
         attach_kubernetes_identity(kubernetes_metadata_, snapshot.containers);
     }
     snapshot.kubernetes_metadata_available = has_kubernetes_metadata_;
+    snapshot.pods = aggregate_pod_metrics(snapshot.containers);
 
     previous_cpu_sample_ = current_cpu_sample;
     previous_network_sample_ = current_network_sample;
