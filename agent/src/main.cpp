@@ -1,15 +1,62 @@
 #include "telemetry_collector.h"
+#include "json_formatter.h"
 
 #include <chrono>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
 
 namespace {
+
+struct OutputOptions {
+    bool json_stdout = false;
+    std::filesystem::path json_file;
+};
+
+OutputOptions parse_options(int argc, char* argv[]) {
+    OutputOptions options;
+    for (int index = 1; index < argc; ++index) {
+        const std::string argument = argv[index];
+        if (argument == "--json") {
+            options.json_stdout = true;
+        } else if (argument == "--json-file" && index + 1 < argc) {
+            options.json_file = argv[++index];
+        } else {
+            throw std::runtime_error(
+                "usage: telemetry_agent [--json | --json-file PATH]");
+        }
+    }
+    if (options.json_stdout && !options.json_file.empty()) {
+        throw std::runtime_error(
+            "--json and --json-file cannot be used together");
+    }
+    return options;
+}
+
+void write_snapshot_file(const std::filesystem::path& path,
+                         const std::string& json) {
+    const std::filesystem::path temporary_path = path.string() + ".tmp";
+    {
+        std::ofstream file(temporary_path, std::ios::trunc);
+        if (!file.is_open()) {
+            throw std::runtime_error("failed to open snapshot file: " +
+                                     temporary_path.string());
+        }
+        file << json << '\n';
+        if (!file) {
+            throw std::runtime_error("failed to write snapshot file: " +
+                                     temporary_path.string());
+        }
+    }
+    std::filesystem::rename(temporary_path, path);
+}
 
 std::string format_process_list(const std::vector<ProcessMetric>& processes,
                                 bool include_cpu) {
@@ -428,14 +475,24 @@ std::string format_kubernetes_event_list(
 
 }  // namespace
 
-int main() {
+int main(int argc, char* argv[]) {
     try {
+        const OutputOptions options = parse_options(argc, argv);
         TelemetryCollector telemetry_collector;
 
         while (true) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
 
             const TelemetrySnapshot snapshot = telemetry_collector.collect();
+            if (options.json_stdout) {
+                std::cout << format_snapshot_as_json(snapshot) << '\n';
+                continue;
+            }
+            if (!options.json_file.empty()) {
+                write_snapshot_file(options.json_file,
+                                    format_snapshot_as_json(snapshot));
+                continue;
+            }
             const NodeMetric& node = snapshot.node;
             std::cout << "timestamp_unix_ms=" << node.timestamp_unix_ms
                       << " node=" << node.hostname

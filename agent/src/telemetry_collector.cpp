@@ -264,6 +264,7 @@ TelemetrySnapshot TelemetryCollector::collect() {
         previous_process_sample_,
         current_process_sample,
         system_cpu_delta);
+    snapshot.processes = process_metrics;
     snapshot.top_cpu_processes = top_by_cpu(process_metrics);
     snapshot.top_memory_processes = top_by_memory(process_metrics);
     snapshot.containers = calculate_container_metrics(

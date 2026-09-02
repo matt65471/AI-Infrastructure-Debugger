@@ -7,6 +7,7 @@ include(CTest)
 add_executable(telemetry_agent
     src/container_metric_calculator.cpp
     src/deployment_metric_aggregator.cpp
+    src/json_formatter.cpp
     src/kubernetes_metadata_collector.cpp
     src/pod_metric_aggregator.cpp
     src/linux/cgroup_collector.cpp
@@ -51,6 +52,17 @@ if(BUILD_TESTING)
         target_compile_options(pressure_collector_test PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME pressure_collector_test COMMAND pressure_collector_test)
+
+    add_executable(json_formatter_test
+        tests/json_formatter_test.cpp
+        src/json_formatter.cpp
+    )
+    target_include_directories(json_formatter_test PRIVATE include)
+    target_compile_features(json_formatter_test PRIVATE cxx_std_17)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(json_formatter_test PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME json_formatter_test COMMAND json_formatter_test)
 
     add_executable(container_metric_calculator_test
         tests/container_metric_calculator_test.cpp

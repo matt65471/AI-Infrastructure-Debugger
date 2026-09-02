@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#07111f" />
+    <title>Infrastructure Debugger</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#/">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span><strong>Infrastructure</strong><small>Debugger</small></span>
+      </a>
+      <div class="topbar-status">
+        <span id="connection-status" class="status-pill waiting">Waiting for data</span>
+        <span id="last-updated" class="timestamp">No snapshot yet</span>
+      </div>
+    </header>
+
+    <main class="shell">
+      <nav id="breadcrumbs" class="breadcrumbs" aria-label="Breadcrumb"></nav>
+      <div id="alert" class="alert" hidden></div>
+      <div id="app" aria-live="polite">
+        <section class="empty-state">
+          <div class="spinner" aria-hidden="true"></div>
+          <h1>Connecting to the node</h1>
+          <p>Waiting for the first telemetry snapshot.</p>
+        </section>
+      </div>
+    </main>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

@@ -60,6 +60,7 @@ struct NodeMetric {
 
 struct TelemetrySnapshot {
     NodeMetric node;
+    std::vector<ProcessMetric> processes;
     std::vector<ProcessMetric> top_cpu_processes;
     std::vector<ProcessMetric> top_memory_processes;
     std::vector<ContainerMetric> containers;

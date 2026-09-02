@@ -9,7 +9,8 @@ applications, detect failures, and identify likely root causes from telemetry
 and service dependencies.
 
 The project currently contains a C++ Linux telemetry agent and a small
-Kubernetes application used to generate service-to-service behavior.
+Kubernetes application used to generate service-to-service behavior. A local
+web dashboard presents the combined telemetry as a drill-down hierarchy.
 
 ## Current Phase
 
@@ -92,6 +93,14 @@ demo_app/
 
 kubernetes/
 └── demo-app.yaml
+
+dashboard/
+├── server.py
+├── sample_snapshot.json
+└── static/
+    ├── app.js
+    ├── index.html
+    └── styles.css
 ```
 
 ## How The Agent Works
@@ -142,6 +151,11 @@ missing, restarting, throttled, or being OOM-killed.
 `TelemetryCollector`, calls `collect()` once per second, and prints the combined
 snapshot.
 
+For the dashboard, `--json-file PATH` atomically replaces one machine-readable
+snapshot file every second. The dashboard server reads that file and never
+needs root access or Kubernetes credentials. `--json` writes the same document
+to standard output for other integrations.
+
 Example output:
 
 ```text
@@ -164,7 +178,7 @@ Install build tools on an Ubuntu VM:
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential cmake git python3
+sudo apt install -y build-essential cmake git python3 python3-venv
 ```
 
 Build and run:
@@ -179,6 +193,24 @@ sudo ./agent/build/telemetry_agent
 ```
 
 Stop the agent with `Ctrl+C`.
+
+To use the drill-down dashboard, run the agent and dashboard in separate VM
+terminals:
+
+```bash
+sudo ./agent/build/telemetry_agent \
+  --json-file /tmp/ai-infrastructure-debugger-snapshot.json
+```
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r demo_app/requirements.txt
+python3 dashboard/server.py --host 0.0.0.0 --port 8080
+```
+
+Then open `http://<vm-ip-address>:8080` from the Mac. See
+[`dashboard/README.md`](dashboard/README.md) for the live and sample-data modes.
 
 With k3s and the demo application running, container calculation, Kubernetes
 identity, pod/Deployment aggregation, and Events are working when the output
