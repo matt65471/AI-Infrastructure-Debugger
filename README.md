@@ -13,26 +13,30 @@ Kubernetes application used to generate service-to-service behavior.
 
 ## Current Phase
 
-The Linux agent collects node-level telemetry once per second. The next VM
-milestone deploys the included Kubernetes demo application on a single-node
-k3s cluster.
+The Linux agent collects node, process, cgroup, container, pod, and Deployment
+telemetry once per second. The included demo application runs on a single-node
+k3s cluster and is ready to be used as the target for fault-injection tests.
 
 Current metrics:
 
-- CPU utilization from `/proc/stat`
-- memory utilization from `/proc/meminfo`
+- CPU utilization from `/proc/stat` plus the online logical CPU count
+- memory/swap capacity and utilization from `/proc/meminfo`
 - network receive/transmit byte rates from `/proc/net/dev`
 - TCP/IP counters from `/proc/net/snmp` and `/proc/net/netstat`
 - disk I/O counters from `/proc/diskstats`
+- load averages and runnable-process counts from `/proc/loadavg`
+- CPU, memory, and I/O pressure stall information from `/proc/pressure`
 - top process CPU and memory metrics from `/proc/[pid]`
-- raw Kubernetes container cgroup v2 counters from `/sys/fs/cgroup`
-- calculated per-container CPU, throttling, memory, and OOM metrics
-- Kubernetes node, workload, pod, and container identity joined by container ID
-- pod-level CPU, memory, throttling, OOM, restart, container, and process aggregates
+- raw Kubernetes container cgroup v2 counters, CPU quotas, and memory events
+- calculated per-container CPU, throttling, memory-pressure, and OOM metrics
+- Kubernetes identity, lifecycle state, QoS, and resource requests/limits
+- pod-level resource and lifecycle aggregates
+- Deployment desired/ready/available replica state and pod resource aggregates
+- the 50 most recent Kubernetes Events
 
 Not included yet:
 
-- Kubernetes lifecycle event history and Service dependency attribution
+- Service dependency attribution and per-container network telemetry
 - gRPC exporting
 - storage
 - databases
@@ -48,16 +52,19 @@ agent/
 │   ├── cpu_collector.h
 │   ├── cgroup_collector.h
 │   ├── container_metric_calculator.h
+│   ├── deployment_metric_aggregator.h
 │   ├── disk_collector.h
 │   ├── kubernetes_metadata_collector.h
 │   ├── mem_collector.h
 │   ├── network_collector.h
 │   ├── pod_metric_aggregator.h
+│   ├── pressure_collector.h
 │   ├── process_collector.h
 │   ├── tcp_collector.h
 │   └── telemetry_collector.h
 └── src/
     ├── container_metric_calculator.cpp
+    ├── deployment_metric_aggregator.cpp
     ├── kubernetes_metadata_collector.cpp
     ├── pod_metric_aggregator.cpp
     ├── linux/
@@ -67,6 +74,7 @@ agent/
     │   ├── mem_collector.cpp
     │   ├── network_collector.cpp
     │   ├── process_collector.cpp
+    │   ├── pressure_collector.cpp
     │   └── tcp_collector.cpp
     ├── main.cpp
     └── telemetry_collector.cpp
@@ -98,19 +106,25 @@ NetworkCollector   -> /proc/net/dev
 TcpCollector       -> /proc/net/snmp, /proc/net/netstat
 DiskCollector      -> /proc/diskstats
 ProcessCollector   -> /proc/[pid]/stat, /proc/[pid]/status, /proc/[pid]/io
+PressureCollector  -> /proc/loadavg, /proc/pressure/{cpu,memory,io}
 TelemetryCollector -> coordinates the collectors
 ```
 
 The cgroup collector detects cgroup v2, discovers host processes in `kubepods`
-cgroups, and reads raw `cpu.stat`, `memory.current`, `memory.max`,
+cgroups, and reads raw `cpu.stat`, `cpu.max`, `memory.current`, `memory.max`,
 `memory.events`, and `cgroup.procs` values. The container metric calculator
 matches consecutive samples by full container ID and calculates CPU usage,
-throttling and OOM deltas, and memory utilization. The Kubernetes metadata
-collector refreshes every five seconds and uses the full container ID to attach
-node, namespace, pod UID/name, container name/image, readiness, restart count,
-and owning workload. For this VM stage it invokes the local k3s `kubectl`; a
-future agent service will use the Kubernetes API directly with a service
-account.
+throttling and memory-event deltas, memory utilization, and the effective CPU
+quota in cores. The pressure collector reports whether tasks are stalled by
+CPU, memory, or I/O contention rather than merely reporting utilization.
+
+The Kubernetes metadata collector refreshes every five seconds and uses the
+full container ID to attach node, namespace, pod UID/name, container
+name/image, pod conditions, QoS class, current and previous termination state,
+restart count, configured requests/limits, and owning workload. It also reads
+Deployment replica status and recent Events. For this VM stage it invokes the
+local k3s `kubectl`; a future long-running service can use the Kubernetes API
+directly with a service account.
 
 The pod metric aggregator groups Kubernetes-matched containers by pod UID. It
 sums CPU, memory, throttling, OOM, and restart values, combines container IDs
@@ -119,6 +133,11 @@ aggregate is marked ready. The existing node metrics continue to come directly
 from Linux host counters; they are not calculated by summing pods, which would
 omit Kubernetes and host overhead.
 
+The Deployment aggregator combines pod measurements with Kubernetes desired,
+ready, available, unavailable, updated, and generation state. This makes it
+possible to distinguish a busy healthy workload from one whose pods are
+missing, restarting, throttled, or being OOM-killed.
+
 `main.cpp` does not parse Linux files directly. It creates a
 `TelemetryCollector`, calls `collect()` once per second, and prints the combined
 snapshot.
@@ -126,7 +145,7 @@ snapshot.
 Example output:
 
 ```text
-timestamp_unix_ms=1788217200000 node=ubuntu-vm cpu_usage_percent=3.20 memory_usage_percent=41.75 memory_available_kb=4045320 network_rx_bytes_per_second=1204 network_tx_bytes_per_second=884 tcp_retransmits_per_second=0 disk_read_bytes_per_second=0 disk_write_bytes_per_second=4096 top_cpu=[1234:payment:12.40] top_memory=[1234:payment:524288] cgroup_v2=true kubernetes_metadata=available containers=[...] pods=[...]
+timestamp_unix_ms=1788217200000 node=ubuntu-vm cpu_usage_percent=3.20 memory_usage_percent=41.75 memory_available_kb=4045320 network_rx_bytes_per_second=1204 network_tx_bytes_per_second=884 tcp_retransmits_per_second=0 disk_read_bytes_per_second=0 disk_write_bytes_per_second=4096 load_average_1m=0.20 cpu_pressure={some={avg10=0.00,...},full=na} memory_pressure={some={...},full={...}} io_pressure={some={...},full={...}} top_cpu=[1234:payment:12.40] top_memory=[1234:payment:524288] cgroup_v2=true kubernetes_metadata=available containers=[...] pods=[...] deployments=[...] kubernetes_events=[...]
 ```
 
 Each `TelemetrySnapshot` contains one explicit `NodeMetric` plus separate
@@ -155,25 +174,29 @@ cd ~/AI-Infrastructure-Debugger
 rm -rf agent/build
 cmake -S agent -B agent/build
 cmake --build agent/build
+ctest --test-dir agent/build --output-on-failure
 sudo ./agent/build/telemetry_agent
 ```
 
 Stop the agent with `Ctrl+C`.
 
 With k3s and the demo application running, container calculation, Kubernetes
-identity, and pod aggregation are working when the output contains:
+identity, pod/Deployment aggregation, and Events are working when the output
+contains:
 
 ```text
-cgroup_v2=true kubernetes_metadata=available containers=[...] pods=[...]
+cgroup_v2=true kubernetes_metadata=available containers=[...] pods=[...] deployments=[...] kubernetes_events=[...]
 ```
 
 Each entry reports a shortened container ID, host cgroup path, CPU percentage,
-cumulative CPU time, throttling deltas, current and maximum memory, memory
-percentage, OOM deltas, and host PIDs. `100%` CPU means one fully used core and
-a multi-core container can exceed `100%`. A newly seen container reports `na`
-for CPU until it has two samples; unlimited memory reports `na` for memory
-percentage. Run the agent with `sudo` on the k3s VM so it can read all host
-processes and use k3s cluster credentials:
+cumulative CPU time, effective cgroup CPU quota, throttling deltas, current and
+maximum memory, memory-pressure/OOM deltas, and host PIDs. Kubernetes enrichment
+adds configured CPU/memory requests and limits; keeping those distinct from
+cgroup enforcement helps reveal configuration/runtime mismatches. `100%` CPU
+means one fully used core and a multi-core container can exceed `100%`. A newly
+seen container reports `na` for CPU until it has two samples; unlimited memory
+reports `na` for memory percentage. Run the agent with `sudo` on the k3s VM so
+it can read all host processes and use k3s cluster credentials:
 
 ```bash
 sudo ./agent/build/telemetry_agent
@@ -182,7 +205,7 @@ sudo ./agent/build/telemetry_agent
 When Kubernetes identity matches, each container entry also includes:
 
 ```text
-kubernetes={node=ubuntu-vm,namespace=infrastructure-demo,pod=payment-...,pod_uid=...,container=payment,image=infrastructure-debugger/payment:v1,phase=Running,ready=true,restarts=0,workload=Deployment/payment}
+kubernetes={node=ubuntu-vm,namespace=infrastructure-demo,pod=payment-...,pod_uid=...,container=payment,image=infrastructure-debugger/payment:v1,phase=Running,qos=Burstable,pod_ready=true,scheduled=true,initialized=true,ready=true,restarts=0,state=Running,reason=,exit_code=0,last_reason=,last_exit_code=0,cpu_request_cores=0.1,cpu_limit_cores=0.5,memory_request_bytes=67108864,memory_limit_bytes=134217728,workload=Deployment/payment}
 ```
 
 Pod sandbox containers and containers that have not appeared in the latest
@@ -193,8 +216,24 @@ reliable pod UID.
 A pod aggregate resembles:
 
 ```text
-{node=ubuntu-vm,namespace=infrastructure-demo,pod=payment-...,pod_uid=...,workload=Deployment/payment,phase=Running,ready=true,container_count=1,container_names=[payment],container_ids=[91ab2345cdef],cpu_usage_percent=12.40,memory_current_bytes=73400320,memory_max=134217728,memory_usage_percent=54.69,oom_kill_delta=0,restarts=0,pids=[1488]}
+{node=ubuntu-vm,namespace=infrastructure-demo,pod=payment-...,pod_uid=...,workload=Deployment/payment,phase=Running,qos=Burstable,pod_ready=true,ready=true,container_count=1,container_names=[payment],container_ids=[91ab2345cdef],cpu_usage_percent=12.40,cpu_limit_cores=0.50,memory_current_bytes=73400320,memory_max=134217728,memory_usage_percent=54.69,oom_kill_delta=0,restarts=0,cpu_request_cores=0.10,configured_cpu_limit_cores=0.50,lifecycle_reasons=[],pids=[1488]}
 ```
+
+Before injecting faults, capture a healthy baseline for at least 30 seconds and
+confirm that `cgroup_v2=true`, `kubernetes_metadata=available`, all expected
+Deployments have matching desired/ready replicas, and the expected pods appear.
+During injection, watch these primary correlations:
+
+```text
+CPU saturation   -> cpu_usage_percent + cpu_pressure.some.avg10 + throttled_usec_delta
+Memory pressure  -> memory_pressure.full.avg10 + memory_high_delta + oom_kill_delta
+Pod crash        -> state/reason + last_reason/last_exit_code + restarts + Events
+Rollout failure  -> desired/ready/unavailable replicas + generation mismatch + Events
+Network fault    -> TCP retransmit/reset/timeout deltas + application behavior
+```
+
+Network counters are currently node-wide. Reliable pod/service network
+attribution remains a later eBPF or connection-tracing phase.
 
 ## Test Workloads
 
@@ -256,8 +295,9 @@ Top CPU/memory PIDs   -> which process is likely responsible
 
 Node-level metrics tell us what is happening on the Linux VM as a whole.
 Container cgroups connect host PIDs and resource usage to Kubernetes pod and
-workload identity. Kubernetes Service selection and request dependencies are
-not mapped yet.
+workload identity. Kubernetes desired state and Events add the orchestration
+context Linux cannot provide. Kubernetes Service selection and request
+dependencies are not mapped yet.
 
 ## Roadmap
 
@@ -267,10 +307,11 @@ Project milestones:
 2. Install k3s on the VM and deploy the included `frontend -> checkout -> payment`
    application.
 3. Calculate per-container rates from the raw cgroup counters.
-4. Aggregate pod metrics into workload/Deployment summaries.
-5. Collect Kubernetes lifecycle events and map Services to selected pods.
+4. Aggregate pod metrics into workload/Deployment summaries. **Complete.**
+5. Collect Kubernetes lifecycle events. **Complete.**
 6. Add fault injection for CPU saturation, memory pressure, network loss, and
    service crashes.
+7. Map Services to selected pods and add request/dependency attribution.
 
 The larger goal is to correlate low-level telemetry with service dependencies
 so the system can eventually distinguish root causes from downstream symptoms.

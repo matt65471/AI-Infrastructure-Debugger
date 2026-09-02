@@ -27,6 +27,10 @@ struct CgroupSample {
     std::string path;
     std::string container_id;
     CgroupCpuStat cpu;
+    std::uint64_t cpu_quota_usec = 0;
+    std::uint64_t cpu_period_usec = 0;
+    bool cpu_limit_available = false;
+    bool cpu_is_unlimited = false;
     std::uint64_t memory_current_bytes = 0;
     std::uint64_t memory_max_bytes = 0;
     bool memory_is_unlimited = false;

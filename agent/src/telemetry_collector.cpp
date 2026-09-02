@@ -21,6 +21,11 @@ std::string read_hostname() {
     return hostname;
 }
 
+std::uint64_t read_logical_cpu_count() {
+    const long count = sysconf(_SC_NPROCESSORS_ONLN);
+    return count > 0 ? static_cast<std::uint64_t>(count) : 0;
+}
+
 std::uint64_t current_time_unix_ms() {
     const auto now = std::chrono::system_clock::now().time_since_epoch();
     return static_cast<std::uint64_t>(
@@ -181,6 +186,7 @@ TelemetrySnapshot TelemetryCollector::collect() {
     const NetworkSample current_network_sample = network_collector_.read_sample();
     const TcpSample current_tcp_sample = tcp_collector_.read_sample();
     const DiskSample current_disk_sample = disk_collector_.read_sample();
+    const PressureSample pressure_sample = pressure_collector_.read_sample();
     const ProcessCollectionSample current_process_sample =
         process_collector_.read_sample();
     const CgroupCollectionSample current_cgroup_sample =
@@ -198,12 +204,16 @@ TelemetrySnapshot TelemetryCollector::collect() {
     TelemetrySnapshot snapshot;
     snapshot.node.timestamp_unix_ms = current_time_unix_ms();
     snapshot.node.hostname = hostname_;
+    snapshot.node.logical_cpu_count = read_logical_cpu_count();
     snapshot.node.cpu_usage_percent = cpu_collector_.calculate_utilization(
         previous_cpu_sample_,
         current_cpu_sample);
     snapshot.node.memory_usage_percent =
         memory_collector_.calculate_utilization(memory_sample);
+    snapshot.node.memory_total_kb = memory_sample.mem_total_kb;
     snapshot.node.memory_available_kb = memory_sample.mem_available_kb;
+    snapshot.node.swap_total_kb = memory_sample.swap_total_kb;
+    snapshot.node.swap_free_kb = memory_sample.swap_free_kb;
     snapshot.node.network_rx_bytes_per_second =
         network_collector_.calculate_rx_bytes_per_second(
             previous_network_sample_,
@@ -248,6 +258,7 @@ TelemetrySnapshot TelemetryCollector::collect() {
     snapshot.node.disk_io_time_ms_delta = positive_delta(
         aggregate_io_time_ms(previous_disk_sample_),
         aggregate_io_time_ms(current_disk_sample));
+    snapshot.node.pressure = pressure_sample;
 
     const std::vector<ProcessMetric> process_metrics = build_process_metrics(
         previous_process_sample_,
@@ -279,6 +290,13 @@ TelemetrySnapshot TelemetryCollector::collect() {
     }
     snapshot.kubernetes_metadata_available = has_kubernetes_metadata_;
     snapshot.pods = aggregate_pod_metrics(snapshot.containers);
+    snapshot.deployments = aggregate_deployment_metrics(
+        snapshot.pods,
+        kubernetes_metadata_,
+        snapshot.node.timestamp_unix_ms);
+    if (has_kubernetes_metadata_) {
+        snapshot.kubernetes_events = kubernetes_metadata_.events;
+    }
 
     previous_cpu_sample_ = current_cpu_sample;
     previous_network_sample_ = current_network_sample;

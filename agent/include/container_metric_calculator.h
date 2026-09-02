@@ -15,6 +15,9 @@ struct ContainerMetric {
     bool cpu_usage_available = false;
     double cpu_usage_percent = 0.0;
     std::uint64_t cpu_usage_usec = 0;
+    bool cpu_limit_available = false;
+    bool cpu_is_unlimited = false;
+    double cpu_limit_cores = 0.0;
     std::uint64_t throttled_periods_delta = 0;
     std::uint64_t throttled_usec_delta = 0;
 
@@ -23,6 +26,8 @@ struct ContainerMetric {
     bool memory_is_unlimited = false;
     bool memory_usage_percent_available = false;
     double memory_usage_percent = 0.0;
+    std::uint64_t memory_high_delta = 0;
+    std::uint64_t memory_max_delta = 0;
     std::uint64_t oom_delta = 0;
     std::uint64_t oom_kill_delta = 0;
 
@@ -36,10 +41,31 @@ struct ContainerMetric {
     std::string container_name;
     std::string image;
     std::string pod_phase;
+    std::string pod_qos_class;
+    bool pod_ready = false;
+    bool pod_scheduled = false;
+    bool pod_initialized = false;
     bool container_ready = false;
     std::uint64_t restart_count = 0;
+    std::string container_state;
+    std::string state_reason;
+    std::int64_t exit_code = 0;
+    std::string last_termination_reason;
+    std::int64_t last_exit_code = 0;
+    std::string started_at;
+    std::string finished_at;
+    std::string last_finished_at;
+    bool cpu_request_available = false;
+    double cpu_request_cores = 0.0;
+    bool kubernetes_cpu_limit_available = false;
+    double kubernetes_cpu_limit_cores = 0.0;
+    bool memory_request_available = false;
+    std::uint64_t memory_request_bytes = 0;
+    bool kubernetes_memory_limit_available = false;
+    std::uint64_t kubernetes_memory_limit_bytes = 0;
     std::string workload_kind;
     std::string workload_name;
+    std::string workload_uid;
 };
 
 std::vector<ContainerMetric> calculate_container_metrics(

@@ -46,6 +46,7 @@ int main() {
     write_file(cgroup_directory / "cpu.stat",
                "usage_usec 1200\nuser_usec 800\nsystem_usec 400\n"
                "nr_periods 10\nnr_throttled 2\nthrottled_usec 75\n");
+    write_file(cgroup_directory / "cpu.max", "25000 100000\n");
     write_file(cgroup_directory / "memory.current", "4096\n");
     write_file(cgroup_directory / "memory.max", "8192\n");
     write_file(cgroup_directory / "memory.events",
@@ -68,6 +69,11 @@ int main() {
                          "reads cumulative CPU usage");
         passed &= expect(sample.cpu.throttled_usec == 75,
                          "reads throttled CPU time");
+        passed &= expect(sample.cpu_limit_available &&
+                             !sample.cpu_is_unlimited &&
+                             sample.cpu_quota_usec == 25000 &&
+                             sample.cpu_period_usec == 100000,
+                         "reads the cgroup CPU quota and period");
         passed &= expect(sample.memory_current_bytes == 4096,
                          "reads current memory");
         passed &= expect(sample.memory_max_bytes == 8192,

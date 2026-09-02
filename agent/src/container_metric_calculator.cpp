@@ -44,6 +44,14 @@ std::vector<ContainerMetric> calculate_container_metrics(
         metric.container_id = current_cgroup.container_id;
         metric.cgroup_path = current_cgroup.path;
         metric.cpu_usage_usec = current_cgroup.cpu.usage_usec;
+        metric.cpu_limit_available = current_cgroup.cpu_limit_available;
+        metric.cpu_is_unlimited = current_cgroup.cpu_is_unlimited;
+        if (metric.cpu_limit_available && !metric.cpu_is_unlimited &&
+            current_cgroup.cpu_period_usec > 0) {
+            metric.cpu_limit_cores =
+                static_cast<double>(current_cgroup.cpu_quota_usec) /
+                static_cast<double>(current_cgroup.cpu_period_usec);
+        }
         metric.memory_current_bytes = current_cgroup.memory_current_bytes;
         metric.memory_max_bytes = current_cgroup.memory_max_bytes;
         metric.memory_is_unlimited = current_cgroup.memory_is_unlimited;
@@ -77,6 +85,12 @@ std::vector<ContainerMetric> calculate_container_metrics(
             metric.throttled_usec_delta = positive_delta(
                 previous_cgroup.cpu.throttled_usec,
                 current_cgroup.cpu.throttled_usec);
+            metric.memory_high_delta = positive_delta(
+                previous_cgroup.memory_events.high,
+                current_cgroup.memory_events.high);
+            metric.memory_max_delta = positive_delta(
+                previous_cgroup.memory_events.max,
+                current_cgroup.memory_events.max);
             metric.oom_delta = positive_delta(
                 previous_cgroup.memory_events.oom,
                 current_cgroup.memory_events.oom);

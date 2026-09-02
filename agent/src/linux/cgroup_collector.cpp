@@ -73,6 +73,28 @@ void read_cpu_stat(const std::filesystem::path& path, CgroupCpuStat& stat) {
     }
 }
 
+void read_cpu_max(const std::filesystem::path& path, CgroupSample& sample) {
+    std::ifstream file(path / "cpu.max");
+    std::string quota;
+    file >> quota >> sample.cpu_period_usec;
+    if (!file || sample.cpu_period_usec == 0) {
+        return;
+    }
+
+    sample.cpu_limit_available = true;
+    if (quota == "max") {
+        sample.cpu_is_unlimited = true;
+        return;
+    }
+
+    try {
+        sample.cpu_quota_usec = std::stoull(quota);
+    } catch (const std::exception&) {
+        sample.cpu_limit_available = false;
+        sample.cpu_quota_usec = 0;
+    }
+}
+
 void read_memory_max(const std::filesystem::path& path, CgroupSample& sample) {
     std::ifstream file(path / "memory.max");
     std::string value;
@@ -188,6 +210,7 @@ CgroupCollectionSample CgroupCollector::read_sample(
         sample.path = path;
         sample.container_id = extract_container_id(path);
         read_cpu_stat(filesystem_path, sample.cpu);
+        read_cpu_max(filesystem_path, sample);
         sample.memory_current_bytes =
             read_number(filesystem_path / "memory.current");
         read_memory_max(filesystem_path, sample);

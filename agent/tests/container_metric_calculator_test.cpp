@@ -34,6 +34,8 @@ int main() {
     previous_existing.cpu.throttled_usec = 50;
     previous_existing.memory_events.oom = 1;
     previous_existing.memory_events.oom_kill = 0;
+    previous_existing.memory_events.high = 4;
+    previous_existing.memory_events.max = 6;
 
     CgroupSample previous_disappeared = make_cgroup(disappeared_id);
     previous_disappeared.cpu.usage_usec = 400'000;
@@ -48,6 +50,11 @@ int main() {
     current_existing.cpu.throttled_usec = 125;
     current_existing.memory_current_bytes = 4096;
     current_existing.memory_max_bytes = 8192;
+    current_existing.cpu_limit_available = true;
+    current_existing.cpu_quota_usec = 50'000;
+    current_existing.cpu_period_usec = 100'000;
+    current_existing.memory_events.high = 7;
+    current_existing.memory_events.max = 10;
     current_existing.memory_events.oom = 3;
     current_existing.memory_events.oom_kill = 1;
     current_existing.process_ids = {101, 102};
@@ -84,6 +91,9 @@ int main() {
                          "calculates throttled period delta");
         passed &= expect(existing.throttled_usec_delta == 75,
                          "calculates throttled time delta");
+        passed &= expect(existing.cpu_limit_available &&
+                             std::abs(existing.cpu_limit_cores - 0.5) < 0.001,
+                         "converts the cgroup CPU quota to cores");
         passed &= expect(existing.memory_usage_percent_available,
                          "calculates limited memory utilization");
         passed &= expect(
@@ -91,6 +101,9 @@ int main() {
             "calculates memory percentage");
         passed &= expect(existing.oom_delta == 2,
                          "calculates OOM event delta");
+        passed &= expect(existing.memory_high_delta == 3 &&
+                             existing.memory_max_delta == 4,
+                         "calculates memory pressure event deltas");
         passed &= expect(existing.oom_kill_delta == 1,
                          "calculates OOM kill delta");
         passed &= expect(existing.process_ids == std::vector<int>({101, 102}),
