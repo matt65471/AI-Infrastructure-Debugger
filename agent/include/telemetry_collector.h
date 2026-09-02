@@ -5,6 +5,7 @@
 #include "container_metric_calculator.h"
 #include "cpu_collector.h"
 #include "disk_collector.h"
+#include "kubernetes_metadata_collector.h"
 #include "mem_collector.h"
 #include "network_collector.h"
 #include "process_collector.h"
@@ -55,6 +56,7 @@ struct TelemetrySnapshot {
     std::vector<ProcessMetric> top_memory_processes;
     std::vector<ContainerMetric> containers;
     CgroupCollectionSample cgroups;
+    bool kubernetes_metadata_available = false;
 };
 
 class TelemetryCollector {
@@ -71,6 +73,7 @@ private:
     DiskCollector disk_collector_;
     ProcessCollector process_collector_;
     CgroupCollector cgroup_collector_;
+    KubernetesMetadataCollector kubernetes_metadata_collector_;
     CpuSample previous_cpu_sample_;
     NetworkSample previous_network_sample_;
     TcpSample previous_tcp_sample_;
@@ -78,6 +81,10 @@ private:
     ProcessCollectionSample previous_process_sample_;
     CgroupCollectionSample previous_cgroup_sample_;
     std::chrono::steady_clock::time_point previous_cgroup_sample_time_;
+    KubernetesMetadataSnapshot kubernetes_metadata_;
+    bool has_kubernetes_metadata_ = false;
+    bool has_attempted_kubernetes_metadata_refresh_ = false;
+    std::chrono::steady_clock::time_point last_kubernetes_metadata_refresh_;
 };
 
 #endif

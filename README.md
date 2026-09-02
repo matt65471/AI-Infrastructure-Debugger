@@ -27,10 +27,11 @@ Current metrics:
 - top process CPU and memory metrics from `/proc/[pid]`
 - raw Kubernetes container cgroup v2 counters from `/sys/fs/cgroup`
 - calculated per-container CPU, throttling, memory, and OOM metrics
+- Kubernetes node, workload, pod, and container identity joined by container ID
 
 Not included yet:
 
-- Kubernetes pod and workload attribution
+- Kubernetes lifecycle event history and Service dependency attribution
 - gRPC exporting
 - storage
 - databases
@@ -47,6 +48,7 @@ agent/
 │   ├── cgroup_collector.h
 │   ├── container_metric_calculator.h
 │   ├── disk_collector.h
+│   ├── kubernetes_metadata_collector.h
 │   ├── mem_collector.h
 │   ├── network_collector.h
 │   ├── process_collector.h
@@ -54,6 +56,7 @@ agent/
 │   └── telemetry_collector.h
 └── src/
     ├── container_metric_calculator.cpp
+    ├── kubernetes_metadata_collector.cpp
     ├── linux/
     │   ├── cgroup_collector.cpp
     │   ├── cpu_collector.cpp
@@ -99,8 +102,12 @@ The cgroup collector detects cgroup v2, discovers host processes in `kubepods`
 cgroups, and reads raw `cpu.stat`, `memory.current`, `memory.max`,
 `memory.events`, and `cgroup.procs` values. The container metric calculator
 matches consecutive samples by full container ID and calculates CPU usage,
-throttling and OOM deltas, and memory utilization. It does not yet map those IDs
-to pod or Deployment names.
+throttling and OOM deltas, and memory utilization. The Kubernetes metadata
+collector refreshes every five seconds and uses the full container ID to attach
+node, namespace, pod UID/name, container name/image, readiness, restart count,
+and owning workload. For this VM stage it invokes the local k3s `kubectl`; a
+future agent service will use the Kubernetes API directly with a service
+account.
 
 `main.cpp` does not parse Linux files directly. It creates a
 `TelemetryCollector`, calls `collect()` once per second, and prints the combined
@@ -109,15 +116,14 @@ snapshot.
 Example output:
 
 ```text
-timestamp_unix_ms=1788217200000 node=ubuntu-vm cpu_usage_percent=3.20 memory_usage_percent=41.75 memory_available_kb=4045320 network_rx_bytes_per_second=1204 network_tx_bytes_per_second=884 tcp_retransmits_per_second=0 disk_read_bytes_per_second=0 disk_write_bytes_per_second=4096 top_cpu=[1234:payment:12.40] top_memory=[1234:payment:524288] cgroup_v2=true containers=[...]
+timestamp_unix_ms=1788217200000 node=ubuntu-vm cpu_usage_percent=3.20 memory_usage_percent=41.75 memory_available_kb=4045320 network_rx_bytes_per_second=1204 network_tx_bytes_per_second=884 tcp_retransmits_per_second=0 disk_read_bytes_per_second=0 disk_write_bytes_per_second=4096 top_cpu=[1234:payment:12.40] top_memory=[1234:payment:524288] cgroup_v2=true kubernetes_metadata=available containers=[...]
 ```
 
 Each `TelemetrySnapshot` contains one explicit `NodeMetric` plus separate
 process and cgroup collections. The node record adds the collection time in
 Unix milliseconds and the Linux hostname to the existing host-wide CPU,
 memory, network, TCP, and disk metrics. The hostname is local Linux identity;
-it will be validated against the Kubernetes node name when Kubernetes metadata
-mapping is added.
+each matched container also reports the node name assigned by Kubernetes.
 
 ## Build And Run
 
@@ -139,7 +145,7 @@ cd ~/AI-Infrastructure-Debugger
 rm -rf agent/build
 cmake -S agent -B agent/build
 cmake --build agent/build
-./agent/build/telemetry_agent
+sudo ./agent/build/telemetry_agent
 ```
 
 Stop the agent with `Ctrl+C`.
@@ -148,7 +154,7 @@ With k3s and the demo application running, cgroup discovery and container
 calculation are working when the output contains:
 
 ```text
-cgroup_v2=true containers=[...]
+cgroup_v2=true kubernetes_metadata=available containers=[...]
 ```
 
 Each entry reports a shortened container ID, host cgroup path, CPU percentage,
@@ -156,12 +162,21 @@ cumulative CPU time, throttling deltas, current and maximum memory, memory
 percentage, OOM deltas, and host PIDs. `100%` CPU means one fully used core and
 a multi-core container can exceed `100%`. A newly seen container reports `na`
 for CPU until it has two samples; unlimited memory reports `na` for memory
-percentage. Run the agent with `sudo` only if the VM restricts access to other
-processes or cgroup files:
+percentage. Run the agent with `sudo` on the k3s VM so it can read all host
+processes and use k3s cluster credentials:
 
 ```bash
 sudo ./agent/build/telemetry_agent
 ```
+
+When Kubernetes identity matches, each container entry also includes:
+
+```text
+kubernetes={node=ubuntu-vm,namespace=infrastructure-demo,pod=payment-...,pod_uid=...,container=payment,image=infrastructure-debugger/payment:v1,phase=Running,ready=true,restarts=0,workload=Deployment/payment}
+```
+
+Pod sandbox containers and containers that have not appeared in the latest
+Kubernetes metadata refresh remain visible with `kubernetes=unmatched`.
 
 ## Test Workloads
 
@@ -221,9 +236,10 @@ High disk writes      -> logging, database, or storage pressure
 Top CPU/memory PIDs   -> which process is likely responsible
 ```
 
-These are node-level metrics. They tell us what is happening on the Linux VM as
-a whole. Process metrics add the first layer of attribution, but the agent does
-not yet map processes to containers, pods, or services.
+Node-level metrics tell us what is happening on the Linux VM as a whole.
+Container cgroups connect host PIDs and resource usage to Kubernetes pod and
+workload identity. Kubernetes Service selection and request dependencies are
+not mapped yet.
 
 ## Roadmap
 
@@ -233,7 +249,7 @@ Project milestones:
 2. Install k3s on the VM and deploy the included `frontend -> checkout -> payment`
    application.
 3. Calculate per-container rates from the raw cgroup counters.
-4. Map Linux/cgroup telemetry back to Kubernetes pods and services.
+4. Collect Kubernetes lifecycle events and map Services to selected pods.
 5. Add fault injection for CPU saturation, memory pressure, network loss, and
    service crashes.
 

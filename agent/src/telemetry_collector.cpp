@@ -4,12 +4,14 @@
 #include <chrono>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <unistd.h>
 
 namespace {
 
 constexpr std::uint64_t kSectorSizeBytes = 512;
 constexpr std::size_t kTopProcessCount = 5;
+constexpr std::chrono::seconds kKubernetesMetadataRefreshInterval(5);
 
 std::string read_hostname() {
     char hostname[256] = {};
@@ -259,6 +261,23 @@ TelemetrySnapshot TelemetryCollector::collect() {
         cgroup_elapsed_usec,
         snapshot.node.timestamp_unix_ms);
     snapshot.cgroups = current_cgroup_sample;
+
+    if (!has_attempted_kubernetes_metadata_refresh_ ||
+        current_cgroup_sample_time - last_kubernetes_metadata_refresh_ >=
+            kKubernetesMetadataRefreshInterval) {
+        KubernetesMetadataSnapshot refreshed_metadata =
+            kubernetes_metadata_collector_.read_snapshot();
+        if (refreshed_metadata.available) {
+            kubernetes_metadata_ = std::move(refreshed_metadata);
+            has_kubernetes_metadata_ = true;
+        }
+        has_attempted_kubernetes_metadata_refresh_ = true;
+        last_kubernetes_metadata_refresh_ = current_cgroup_sample_time;
+    }
+    if (has_kubernetes_metadata_) {
+        attach_kubernetes_identity(kubernetes_metadata_, snapshot.containers);
+    }
+    snapshot.kubernetes_metadata_available = has_kubernetes_metadata_;
 
     previous_cpu_sample_ = current_cpu_sample;
     previous_network_sample_ = current_network_sample;

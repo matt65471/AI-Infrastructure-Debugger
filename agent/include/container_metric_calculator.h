@@ -27,6 +27,19 @@ struct ContainerMetric {
     std::uint64_t oom_kill_delta = 0;
 
     std::vector<int> process_ids;
+
+    bool kubernetes_identity_available = false;
+    std::string namespace_name;
+    std::string pod_name;
+    std::string pod_uid;
+    std::string node_name;
+    std::string container_name;
+    std::string image;
+    std::string pod_phase;
+    bool container_ready = false;
+    std::uint64_t restart_count = 0;
+    std::string workload_kind;
+    std::string workload_name;
 };
 
 std::vector<ContainerMetric> calculate_container_metrics(

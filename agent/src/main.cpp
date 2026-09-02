@@ -95,7 +95,24 @@ std::string format_container_list(
         }
         stream << ",oom_delta=" << container.oom_delta
                << ",oom_kill_delta=" << container.oom_kill_delta
-               << ",pids=" << format_pid_list(container.process_ids) << '}';
+               << ",pids=" << format_pid_list(container.process_ids);
+        if (container.kubernetes_identity_available) {
+            stream << ",kubernetes={node=" << container.node_name
+                   << ",namespace=" << container.namespace_name
+                   << ",pod=" << container.pod_name
+                   << ",pod_uid=" << container.pod_uid
+                   << ",container=" << container.container_name
+                   << ",image=" << container.image
+                   << ",phase=" << container.pod_phase
+                   << ",ready="
+                   << (container.container_ready ? "true" : "false")
+                   << ",restarts=" << container.restart_count
+                   << ",workload=" << container.workload_kind << '/'
+                   << container.workload_name << '}';
+        } else {
+            stream << ",kubernetes=unmatched";
+        }
+        stream << '}';
     }
     stream << ']';
     return stream.str();
@@ -154,6 +171,10 @@ int main() {
                       << format_process_list(snapshot.top_memory_processes, false)
                       << " cgroup_v2="
                       << (snapshot.cgroups.cgroup_v2_available ? "true" : "false")
+                      << " kubernetes_metadata="
+                      << (snapshot.kubernetes_metadata_available
+                              ? "available"
+                              : "unavailable")
                       << " containers="
                       << format_container_list(snapshot.containers)
                       << '\n';
