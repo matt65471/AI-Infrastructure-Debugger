@@ -328,8 +328,10 @@ Top CPU/memory PIDs   -> which process is likely responsible
 Node-level metrics tell us what is happening on the Linux VM as a whole.
 Container cgroups connect host PIDs and resource usage to Kubernetes pod and
 workload identity. Kubernetes desired state and Events add the orchestration
-context Linux cannot provide. Kubernetes Service selection and request
-dependencies are not mapped yet.
+context Linux cannot provide. The demo's OpenTelemetry instrumentation now
+captures request dependencies and attaches Kubernetes pod, container,
+namespace, and node identity to each trace and request metric. Service-to-pod
+topology derived from the Kubernetes API is still a separate future mapping.
 
 ## Roadmap
 
@@ -343,7 +345,9 @@ Project milestones:
 5. Collect Kubernetes lifecycle events. **Complete.**
 6. Add fault injection for CPU saturation, memory pressure, network loss, and
    service crashes.
-7. Map Services to selected pods and add request/dependency attribution.
+7. Collect OpenTelemetry traces and application request metrics. **Complete.**
+8. Persist application telemetry, map Services to selected pods, and correlate
+   request symptoms with the existing Linux/container time series.
 
 The larger goal is to correlate low-level telemetry with service dependencies
 so the system can eventually distinguish root causes from downstream symptoms.
