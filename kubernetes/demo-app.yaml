@@ -26,6 +26,7 @@ data:
         verbosity: detailed
       otlphttp/telemetry_database:
         endpoint: http://telemetry-dashboard:8080
+        encoding: proto
 
     service:
       pipelines:

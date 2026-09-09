@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import gzip
 import json
 import logging
 import os
@@ -131,9 +132,29 @@ def create_app(
         if not database or not database.ready:
             raise HTTPException(status_code=503, detail="Telemetry database is unavailable")
         payload = await request.body()
+        content_encoding = request.headers.get("content-encoding", "identity").lower()
+        if content_encoding == "gzip":
+            try:
+                payload = gzip.decompress(payload)
+            except (gzip.BadGzipFile, EOFError) as error:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid gzip-compressed OTLP trace payload",
+                ) from error
+        elif content_encoding not in {"", "identity"}:
+            raise HTTPException(
+                status_code=415,
+                detail=f"Unsupported OTLP content encoding: {content_encoding}",
+            )
         try:
             await asyncio.to_thread(database.ingest_otlp_traces, payload)
         except DecodeError as error:
+            LOGGER.warning(
+                "invalid OTLP protobuf payload: content_type=%s content_encoding=%s bytes=%d",
+                request.headers.get("content-type", ""),
+                content_encoding,
+                len(payload),
+            )
             raise HTTPException(status_code=400, detail="Invalid OTLP trace payload") from error
         except Exception as error:
             LOGGER.exception("failed to persist OTLP traces")

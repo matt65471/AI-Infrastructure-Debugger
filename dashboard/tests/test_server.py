@@ -1,6 +1,7 @@
 import sys
 import tempfile
 import unittest
+import gzip
 from pathlib import Path
 from typing import Any
 
@@ -133,6 +134,27 @@ class DashboardApiTest(unittest.TestCase):
         self.assertEqual(accepted.status_code, 200)
         self.assertEqual(accepted.headers["content-type"], "application/x-protobuf")
         self.assertEqual(rejected.status_code, 400)
+
+    def test_otlp_endpoint_accepts_collector_gzip_compression(self) -> None:
+        payload = ExportTraceServiceRequest().SerializeToString()
+        response = self.client.post(
+            "/v1/traces",
+            content=gzip.compress(payload),
+            headers={
+                "content-type": "application/x-protobuf",
+                "content-encoding": "gzip",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.database.trace_payloads[-1], payload)
+
+    def test_otlp_endpoint_rejects_unsupported_compression(self) -> None:
+        response = self.client.post(
+            "/v1/traces",
+            content=b"payload",
+            headers={"content-encoding": "br"},
+        )
+        self.assertEqual(response.status_code, 415)
 
     def test_database_outage_only_disables_historical_endpoints(self) -> None:
         self.database.ready = False

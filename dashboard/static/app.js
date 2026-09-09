@@ -96,6 +96,15 @@ function latestRollup(namespace, deploymentName) {
   return deployment?.latest || null;
 }
 
+function nodeHistorySummary() {
+  const series = state.overviewRollups?.node || [];
+  const observed = series.filter((item) => (
+    item.cpu_usage_percent != null || item.memory_usage_percent != null
+  )).length;
+  const windowMinutes = state.overviewRollups?.window_minutes || 60;
+  return `${observed}/${windowMinutes} minutes collected · new point each minute`;
+}
+
 function applicationHealthTable() {
   if (state.historyError) {
     return `<div class="panel history-unavailable"><p class="lede">Historical telemetry unavailable: ${esc(state.historyError)}</p></div>`;
@@ -193,7 +202,7 @@ function renderNode(snapshot) {
   </section>
 
   <section class="section two-column">
-    <article class="panel"><div class="section-heading"><h2>Resource trend</h2><p>Last 60 one-minute buckets</p></div>${state.historyError ? `<p class="lede history-unavailable">Historical telemetry unavailable: ${esc(state.historyError)}</p>` : `<div class="chart-wrap"><canvas id="resource-chart" aria-label="CPU and memory trend chart"></canvas></div>`}</article>
+    <article class="panel"><div class="section-heading"><h2>Resource trend</h2><p>${esc(nodeHistorySummary())}</p></div>${state.historyError ? `<p class="lede history-unavailable">Historical telemetry unavailable: ${esc(state.historyError)}</p>` : `<div class="chart-wrap resource-chart-wrap"><canvas id="resource-chart" aria-label="CPU and memory usage over the last hour"></canvas></div>`}</article>
     <article class="panel"><div class="section-heading"><h2>Node traffic</h2><p>Current rate</p></div>
       <table class="metric-table"><tbody>
         <tr><th>Network receive</th><td>${bytes(node.network_rx_bytes_per_second)}/s</td></tr>
@@ -386,6 +395,7 @@ function renderNotFound(kind, name) {
 function drawResourceChart() {
   const canvas = document.querySelector("#resource-chart");
   const history = state.overviewRollups?.node?.map((sample) => ({
+    bucket: sample.bucket,
     cpu: sample.cpu_usage_percent,
     memory: sample.memory_usage_percent,
   })) || [];
@@ -398,36 +408,76 @@ function drawResourceChart() {
   context.scale(scale, scale);
   const width = rect.width;
   const height = rect.height;
-  const padding = 12;
-  context.strokeStyle = "#1c3248";
-  context.lineWidth = 1;
+  const plot = { left: 54, right: width - 16, top: 28, bottom: height - 38 };
+  const plotWidth = Math.max(1, plot.right - plot.left);
+  const plotHeight = Math.max(1, plot.bottom - plot.top);
+  context.font = "10px system-ui";
+  context.textBaseline = "middle";
   [0, 25, 50, 75, 100].forEach((value) => {
-    const y = padding + (height - padding * 2) * (1 - value / 100);
-    context.beginPath(); context.moveTo(padding, y); context.lineTo(width - padding, y); context.stroke();
+    const y = plot.bottom - plotHeight * value / 100;
+    context.strokeStyle = value === 0 ? "#36516b" : "#1c3248";
+    context.lineWidth = 1;
+    context.beginPath(); context.moveTo(plot.left, y); context.lineTo(plot.right, y); context.stroke();
+    context.fillStyle = "#8da4ba";
+    context.textAlign = "right";
+    context.fillText(`${value}%`, plot.left - 8, y);
   });
+
+  const tickIndexes = [0, Math.floor((history.length - 1) / 2), history.length - 1];
+  tickIndexes.forEach((index, position) => {
+    const x = plot.left + plotWidth * index / Math.max(1, history.length - 1);
+    const bucket = new Date(history[index].bucket);
+    const label = bucket.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    context.strokeStyle = "#1c3248";
+    context.beginPath(); context.moveTo(x, plot.top); context.lineTo(x, plot.bottom); context.stroke();
+    context.fillStyle = "#8da4ba";
+    context.textAlign = position === 0 ? "left" : position === 2 ? "right" : "center";
+    context.fillText(label, x, plot.bottom + 15);
+  });
+
+  context.save();
+  context.translate(13, plot.top + plotHeight / 2);
+  context.rotate(-Math.PI / 2);
+  context.fillStyle = "#8da4ba";
+  context.textAlign = "center";
+  context.fillText("Usage (%)", 0, 0);
+  context.restore();
+  context.fillStyle = "#8da4ba";
+  context.textAlign = "center";
+  context.fillText("Time · last 60 minutes", plot.left + plotWidth / 2, height - 7);
+
   const drawLine = (selector, color) => {
     context.strokeStyle = color;
     context.lineWidth = 2;
-    context.beginPath();
     let drawing = false;
+    context.beginPath();
     history.forEach((sample, index) => {
       const value = selector(sample);
       if (value == null) { drawing = false; return; }
-      const x = padding + (width - padding * 2) * (history.length === 1 ? 1 : index / (history.length - 1));
-      const y = padding + (height - padding * 2) * (1 - Math.min(100, value) / 100);
+      const x = plot.left + plotWidth * index / Math.max(1, history.length - 1);
+      const y = plot.bottom - plotHeight * Math.min(100, Math.max(0, value)) / 100;
       drawing ? context.lineTo(x, y) : context.moveTo(x, y);
       drawing = true;
     });
     context.stroke();
+    history.forEach((sample, index) => {
+      const value = selector(sample);
+      if (value == null) return;
+      const x = plot.left + plotWidth * index / Math.max(1, history.length - 1);
+      const y = plot.bottom - plotHeight * Math.min(100, Math.max(0, value)) / 100;
+      context.fillStyle = color;
+      context.beginPath(); context.arc(x, y, 2.2, 0, Math.PI * 2); context.fill();
+    });
   };
   drawLine((sample) => sample.cpu, "#42d6c6");
   drawLine((sample) => sample.memory, "#5ba9ff");
   context.font = "11px system-ui";
-  context.fillStyle = "#8da4ba";
-  context.fillText("CPU", padding, 12);
-  context.fillStyle = "#42d6c6"; context.fillRect(padding + 26, 7, 12, 2);
-  context.fillStyle = "#8da4ba"; context.fillText("Memory", padding + 50, 12);
-  context.fillStyle = "#5ba9ff"; context.fillRect(padding + 96, 7, 12, 2);
+  context.textAlign = "left";
+  context.textBaseline = "middle";
+  context.fillStyle = "#42d6c6"; context.fillRect(plot.left, 8, 14, 2);
+  context.fillStyle = "#b9d0e3"; context.fillText("CPU", plot.left + 20, 9);
+  context.fillStyle = "#5ba9ff"; context.fillRect(plot.left + 62, 8, 14, 2);
+  context.fillStyle = "#b9d0e3"; context.fillText("Memory", plot.left + 82, 9);
 }
 
 function drawSeriesChart(canvasId, series, definitions) {
