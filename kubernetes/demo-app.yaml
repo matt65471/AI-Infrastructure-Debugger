@@ -1,9 +1,4 @@
 apiVersion: v1
-kind: Namespace
-metadata:
-  name: infrastructure-demo
----
-apiVersion: v1
 kind: ConfigMap
 metadata:
   name: otel-collector-config
@@ -29,13 +24,15 @@ data:
     exporters:
       debug:
         verbosity: detailed
+      otlphttp/telemetry_database:
+        endpoint: http://telemetry-dashboard:8080
 
     service:
       pipelines:
         traces:
           receivers: [otlp]
           processors: [memory_limiter, batch]
-          exporters: [debug]
+          exporters: [debug, otlphttp/telemetry_database]
         metrics:
           receivers: [otlp]
           processors: [memory_limiter, batch]

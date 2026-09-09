@@ -175,6 +175,11 @@ h3 { font-size: 14px; margin-bottom: 4px; }
 .metric-table td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
 .table-scroll { overflow-x: auto; }
 .event-message { min-width: 260px; color: var(--muted); }
+.table-link { color: var(--cyan); text-decoration: none; font-weight: 650; }
+.table-link:hover { text-decoration: underline; }
+.table-subtitle { display: block; margin-top: 3px; }
+.history-unavailable { border-color: rgba(255, 189, 91, 0.35); }
+.route-heading { margin-top: 20px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-all; }
 
 .raw-details { margin-top: 14px; border: 1px solid var(--line-soft); border-radius: 12px; overflow: hidden; }

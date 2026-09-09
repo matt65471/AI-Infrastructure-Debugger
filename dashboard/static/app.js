@@ -1,7 +1,8 @@
 const state = {
   snapshot: null,
-  history: [],
-  lastTimestamp: null,
+  overviewRollups: null,
+  deploymentRollups: {},
+  historyError: null,
   error: null,
 };
 
@@ -88,6 +89,37 @@ function deploymentCard(deployment) {
   </button>`;
 }
 
+function latestRollup(namespace, deploymentName) {
+  const deployment = state.overviewRollups?.deployments?.find((item) => (
+    item.namespace === namespace && item.deployment_name === deploymentName
+  ));
+  return deployment?.latest || null;
+}
+
+function applicationHealthTable() {
+  if (state.historyError) {
+    return `<div class="panel history-unavailable"><p class="lede">Historical telemetry unavailable: ${esc(state.historyError)}</p></div>`;
+  }
+  const deployments = state.overviewRollups?.deployments || [];
+  if (!deployments.length) {
+    return `<div class="panel"><p class="lede">Waiting for the first completed one-minute application rollup.</p></div>`;
+  }
+  return `<div class="panel table-scroll"><table class="event-table">
+    <thead><tr><th>Deployment</th><th>Requests/min</th><th>Error rate</th><th>P95 latency</th><th>CPU average</th><th>Memory average</th></tr></thead>
+    <tbody>${deployments.map((deployment) => {
+      const latest = deployment.latest;
+      return `<tr>
+        <td><a class="table-link" href="${pathFor("deployment", deployment.namespace, deployment.deployment_name)}">${esc(deployment.deployment_name)}</a><span class="subtle table-subtitle">${esc(deployment.namespace)}</span></td>
+        <td>${latest?.request_count ?? "—"}</td>
+        <td>${latest?.error_rate_percent == null ? "—" : percent(latest.error_rate_percent)}</td>
+        <td>${latest?.p95_latency_ms == null ? "—" : `${number(latest.p95_latency_ms, 1)} ms`}</td>
+        <td>${latest?.average_cpu_percent == null ? "—" : percent(latest.average_cpu_percent)}</td>
+        <td>${latest?.average_memory_bytes == null ? "—" : bytes(latest.average_memory_bytes)}</td>
+      </tr>`;
+    }).join("")}</tbody>
+  </table></div>`;
+}
+
 function podCard(pod) {
   const unhealthy = !pod.pod_ready || !pod.all_containers_ready || pod.oom_kill_delta > 0;
   const warning = !unhealthy && pod.restart_count > 0;
@@ -161,7 +193,7 @@ function renderNode(snapshot) {
   </section>
 
   <section class="section two-column">
-    <article class="panel"><div class="section-heading"><h2>Resource trend</h2><p>Last ${state.history.length} samples</p></div><div class="chart-wrap"><canvas id="resource-chart" aria-label="CPU and memory trend chart"></canvas></div></article>
+    <article class="panel"><div class="section-heading"><h2>Resource trend</h2><p>Last 60 one-minute buckets</p></div>${state.historyError ? `<p class="lede history-unavailable">Historical telemetry unavailable: ${esc(state.historyError)}</p>` : `<div class="chart-wrap"><canvas id="resource-chart" aria-label="CPU and memory trend chart"></canvas></div>`}</article>
     <article class="panel"><div class="section-heading"><h2>Node traffic</h2><p>Current rate</p></div>
       <table class="metric-table"><tbody>
         <tr><th>Network receive</th><td>${bytes(node.network_rx_bytes_per_second)}/s</td></tr>
@@ -173,6 +205,8 @@ function renderNode(snapshot) {
       </tbody></table>
     </article>
   </section>
+
+  <section class="section"><div class="section-heading"><h2>Application health</h2><p>Latest completed one-minute bucket</p></div>${applicationHealthTable()}</section>
 
   <section class="section"><div class="section-heading"><h2>Deployments</h2><p>Choose a workload to inspect its pods</p></div>
     <div class="entity-grid">${deployments.length ? deployments.map(deploymentCard).join("") : `<div class="panel"><p class="lede">No Deployments were reported.</p></div>`}</div>
@@ -188,6 +222,8 @@ function renderDeployment(snapshot, namespace, name) {
   if (!deployment) return renderNotFound("Deployment", name);
   const pods = snapshot.pods.filter((pod) => pod.namespace === namespace && pod.workload_kind === "Deployment" && pod.workload_name === name);
   const level = healthForDeployment(deployment);
+  const rollups = state.historyError ? null : state.deploymentRollups[`${namespace}/${name}`];
+  const latest = state.historyError ? null : latestRollup(namespace, name);
   setBreadcrumbs([{ label: snapshot.node.hostname, href: "#/" }, { label: name }]);
   app.innerHTML = `${heading("Deployment", name, `${namespace} · Kubernetes desired state combined with observed Linux usage.`, `<span class="status-pill ${level}">${healthLabel(level)}</span>`)}
     <section class="metric-grid">
@@ -197,6 +233,9 @@ function renderDeployment(snapshot, namespace, name) {
       ${metricCard("CPU throttled", `${number(deployment.throttled_usec_delta / 1000, 2)} ms`, "Since previous sample", "var(--amber)")}
       ${metricCard("OOM kills", number(deployment.oom_kill_delta, 0), "Since previous sample", "var(--red)")}
       ${metricCard("Restarts", number(deployment.restart_count, 0), `${deployment.observed_pod_count} observed pods`, "var(--amber)")}
+      ${metricCard("Requests/min", latest?.request_count ?? "—", "Latest completed minute", "var(--green)")}
+      ${metricCard("Error rate", latest?.error_rate_percent == null ? "—" : percent(latest.error_rate_percent), `${latest?.error_count ?? 0} failed requests`, "var(--red)")}
+      ${metricCard("P95 latency", latest?.p95_latency_ms == null ? "—" : `${number(latest.p95_latency_ms, 1)} ms`, "Latest completed minute", "var(--blue)")}
     </section>
     <section class="section two-column">
       <article class="panel"><div class="section-heading"><h2>Configuration and rollout</h2><p>Requested vs enforced</p></div><table class="metric-table"><tbody>
@@ -216,8 +255,28 @@ function renderDeployment(snapshot, namespace, name) {
         <tr><th>OOM kills</th><td>${deployment.oom_kill_delta}</td></tr>
       </tbody></table></article>
     </section>
+    <section class="section"><div class="section-heading"><h2>Application history</h2><p>Last 60 completed one-minute buckets</p></div>
+      ${state.historyError ? `<div class="panel history-unavailable"><p class="lede">Historical telemetry unavailable: ${esc(state.historyError)}</p></div>` : `
+      <div class="two-column">
+        <article class="panel"><div class="section-heading"><h2>Traffic and errors</h2><p>Requests per minute</p></div><div class="chart-wrap"><canvas id="request-chart" aria-label="Request and error trend chart"></canvas></div></article>
+        <article class="panel"><div class="section-heading"><h2>Latency</h2><p>P95 milliseconds</p></div><div class="chart-wrap"><canvas id="latency-chart" aria-label="P95 latency trend chart"></canvas></div></article>
+      </div>
+      <div class="section-heading route-heading"><h2>Routes</h2><p>Latest completed minute</p></div>${renderRouteRollups(rollups?.routes || [])}`}
+    </section>
     <section class="section"><div class="section-heading"><h2>Pods</h2><p>Choose a pod to inspect its containers</p></div><div class="entity-grid">${pods.length ? pods.map(podCard).join("") : `<div class="panel"><p class="lede">No running pod cgroups are currently visible for this Deployment.</p></div>`}</div></section>
     ${rawDetails(deployment)}`;
+  requestAnimationFrame(drawDeploymentCharts);
+}
+
+function renderRouteRollups(routes) {
+  if (!routes.length) return `<div class="panel"><p class="lede">No completed request routes are available yet.</p></div>`;
+  return `<div class="panel table-scroll"><table class="event-table">
+    <thead><tr><th>Route</th><th>Requests</th><th>Errors</th><th>Average</th><th>P50</th><th>P95</th><th>P99</th></tr></thead>
+    <tbody>${routes.map((route) => `<tr>
+      <td class="mono">${esc(route.http_route)}</td><td>${route.request_count}</td><td>${route.error_count}</td>
+      <td>${number(route.average_latency_ms, 1)} ms</td><td>${number(route.p50_latency_ms, 1)} ms</td>
+      <td>${number(route.p95_latency_ms, 1)} ms</td><td>${number(route.p99_latency_ms, 1)} ms</td>
+    </tr>`).join("")}</tbody></table></div>`;
 }
 
 function renderPod(snapshot, uid) {
@@ -326,7 +385,11 @@ function renderNotFound(kind, name) {
 
 function drawResourceChart() {
   const canvas = document.querySelector("#resource-chart");
-  if (!canvas || state.history.length < 1) return;
+  const history = state.overviewRollups?.node?.map((sample) => ({
+    cpu: sample.cpu_usage_percent,
+    memory: sample.memory_usage_percent,
+  })) || [];
+  if (!canvas || history.length < 1) return;
   const rect = canvas.getBoundingClientRect();
   const scale = window.devicePixelRatio || 1;
   canvas.width = Math.max(1, rect.width * scale);
@@ -346,10 +409,14 @@ function drawResourceChart() {
     context.strokeStyle = color;
     context.lineWidth = 2;
     context.beginPath();
-    state.history.forEach((sample, index) => {
-      const x = padding + (width - padding * 2) * (state.history.length === 1 ? 1 : index / (state.history.length - 1));
-      const y = padding + (height - padding * 2) * (1 - Math.min(100, selector(sample)) / 100);
-      index ? context.lineTo(x, y) : context.moveTo(x, y);
+    let drawing = false;
+    history.forEach((sample, index) => {
+      const value = selector(sample);
+      if (value == null) { drawing = false; return; }
+      const x = padding + (width - padding * 2) * (history.length === 1 ? 1 : index / (history.length - 1));
+      const y = padding + (height - padding * 2) * (1 - Math.min(100, value) / 100);
+      drawing ? context.lineTo(x, y) : context.moveTo(x, y);
+      drawing = true;
     });
     context.stroke();
   };
@@ -361,6 +428,62 @@ function drawResourceChart() {
   context.fillStyle = "#42d6c6"; context.fillRect(padding + 26, 7, 12, 2);
   context.fillStyle = "#8da4ba"; context.fillText("Memory", padding + 50, 12);
   context.fillStyle = "#5ba9ff"; context.fillRect(padding + 96, 7, 12, 2);
+}
+
+function drawSeriesChart(canvasId, series, definitions) {
+  const canvas = document.querySelector(`#${canvasId}`);
+  if (!canvas || !series?.length) return;
+  const rect = canvas.getBoundingClientRect();
+  const scale = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, rect.width * scale);
+  canvas.height = Math.max(1, rect.height * scale);
+  const context = canvas.getContext("2d");
+  context.scale(scale, scale);
+  const width = rect.width;
+  const height = rect.height;
+  const padding = 16;
+  const values = definitions.flatMap((definition) => series.map((row) => row[definition.key]).filter((value) => value != null));
+  const maximum = Math.max(1, ...values);
+  context.strokeStyle = "#1c3248";
+  [0, 0.5, 1].forEach((ratio) => {
+    const y = padding + (height - padding * 2) * (1 - ratio);
+    context.beginPath(); context.moveTo(padding, y); context.lineTo(width - padding, y); context.stroke();
+  });
+  definitions.forEach((definition, definitionIndex) => {
+    context.strokeStyle = definition.color;
+    context.lineWidth = 2;
+    context.beginPath();
+    let drawing = false;
+    series.forEach((row, index) => {
+      const value = row[definition.key];
+      if (value == null) { drawing = false; return; }
+      const x = padding + (width - padding * 2) * index / Math.max(1, series.length - 1);
+      const y = padding + (height - padding * 2) * (1 - value / maximum);
+      drawing ? context.lineTo(x, y) : context.moveTo(x, y);
+      drawing = true;
+    });
+    context.stroke();
+    context.font = "11px system-ui";
+    context.fillStyle = definition.color;
+    context.fillText(definition.label, padding + definitionIndex * 92, 12);
+  });
+  context.fillStyle = "#8da4ba";
+  context.font = "10px system-ui";
+  context.fillText(number(maximum, 1), width - 45, 12);
+}
+
+function drawDeploymentCharts() {
+  const parts = window.location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
+  if (parts[0] !== "deployment" || parts.length < 3) return;
+  const rollups = state.deploymentRollups[`${parts[1]}/${parts[2]}`];
+  if (!rollups) return;
+  drawSeriesChart("request-chart", rollups.series, [
+    { key: "request_count", label: "Requests", color: "#42d6c6" },
+    { key: "error_count", label: "Errors", color: "#ff6b7a" },
+  ]);
+  drawSeriesChart("latency-chart", rollups.series, [
+    { key: "p95_latency_ms", label: "P95 latency", color: "#5ba9ff" },
+  ]);
 }
 
 function bindNavigation() {
@@ -390,11 +513,6 @@ async function poll() {
     state.snapshot = body;
     state.error = null;
     const timestamp = body.node.timestamp_unix_ms;
-    if (timestamp !== state.lastTimestamp) {
-      state.history.push({ timestamp, cpu: body.node.cpu_usage_percent, memory: body.node.memory_usage_percent });
-      if (state.history.length > 120) state.history.shift();
-      state.lastTimestamp = timestamp;
-    }
     connectionStatus.className = "status-pill healthy";
     connectionStatus.textContent = "Live telemetry";
     lastUpdated.textContent = `Updated ${new Date(timestamp).toLocaleTimeString()}`;
@@ -409,7 +527,35 @@ async function poll() {
   }
 }
 
-window.addEventListener("hashchange", render);
-window.addEventListener("resize", () => requestAnimationFrame(drawResourceChart));
+async function pollRollups() {
+  try {
+    const response = await fetch("/api/rollups/overview?minutes=60", { cache: "no-store" });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.detail || `Rollup request failed (${response.status})`);
+    state.overviewRollups = body;
+    state.historyError = null;
+    await pollCurrentDeploymentRollups();
+    render();
+  } catch (error) {
+    state.historyError = error.message;
+    render();
+  }
+}
+
+async function pollCurrentDeploymentRollups() {
+  const parts = window.location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
+  if (parts[0] !== "deployment" || parts.length < 3) return;
+  const namespace = parts[1];
+  const deployment = parts[2];
+  const response = await fetch(`/api/rollups/deployments/${encodeURIComponent(namespace)}/${encodeURIComponent(deployment)}?minutes=60`, { cache: "no-store" });
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.detail || `Deployment rollup request failed (${response.status})`);
+  state.deploymentRollups[`${namespace}/${deployment}`] = body;
+}
+
+window.addEventListener("hashchange", () => { render(); pollCurrentDeploymentRollups().then(render).catch(() => {}); });
+window.addEventListener("resize", () => requestAnimationFrame(() => { drawResourceChart(); drawDeploymentCharts(); }));
 poll();
+pollRollups();
 setInterval(poll, 1000);
+setInterval(pollRollups, 15000);

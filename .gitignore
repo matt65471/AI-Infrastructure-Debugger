@@ -4,6 +4,8 @@ cmake-build-*/
 agent/build/
 
 # Compiled binaries and object files
+__pycache__/
+*.py[cod]
 *.o
 *.obj
 *.a

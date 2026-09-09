@@ -16,12 +16,17 @@ docker build \
   --file "${project_dir}/demo_app/payment/Dockerfile" \
   --tag infrastructure-debugger/payment:v1 \
   "${project_dir}/demo_app"
+docker build \
+  --file "${project_dir}/dashboard/Dockerfile" \
+  --tag infrastructure-debugger/dashboard:v1 \
+  "${project_dir}"
 
 docker save \
   --output "${image_archive}" \
   infrastructure-debugger/frontend:v1 \
   infrastructure-debugger/checkout:v1 \
-  infrastructure-debugger/payment:v1
+  infrastructure-debugger/payment:v1 \
+  infrastructure-debugger/dashboard:v1
 
 sudo k3s ctr --namespace k8s.io images import "${image_archive}"
 sudo k3s ctr --namespace k8s.io images list | grep infrastructure-debugger

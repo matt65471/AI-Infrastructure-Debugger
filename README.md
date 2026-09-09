@@ -8,9 +8,10 @@ The long-term goal is to build a debugger that can monitor distributed
 applications, detect failures, and identify likely root causes from telemetry
 and service dependencies.
 
-The project currently contains a C++ Linux telemetry agent and a small
-Kubernetes application used to generate service-to-service behavior. A local
-web dashboard presents the combined telemetry as a drill-down hierarchy.
+The project currently contains a C++ Linux telemetry agent, a small Kubernetes
+application used to generate service-to-service behavior, OpenTelemetry tracing,
+and PostgreSQL-backed history. A dashboard running in k3s presents live state
+and one-minute application/infrastructure rollups as a drill-down hierarchy.
 
 ## Current Phase
 
@@ -39,8 +40,6 @@ Not included yet:
 
 - Service dependency attribution and per-container network telemetry
 - gRPC exporting
-- storage
-- databases
 - machine learning
 - eBPF
 
@@ -92,9 +91,16 @@ demo_app/
 └── README.md
 
 kubernetes/
+├── namespace.yaml
+├── postgres.yaml
+├── dashboard.yaml
 └── demo-app.yaml
 
 dashboard/
+├── Dockerfile
+├── database.py
+├── maintenance.py
+├── migrations/
 ├── server.py
 ├── sample_snapshot.json
 └── static/
@@ -194,22 +200,16 @@ sudo ./agent/build/telemetry_agent
 
 Stop the agent with `Ctrl+C`.
 
-To use the drill-down dashboard, run the agent and dashboard in separate VM
-terminals:
+To feed the k3s dashboard and PostgreSQL history, run the agent on the VM:
 
 ```bash
 sudo ./agent/build/telemetry_agent \
-  --json-file /tmp/ai-infrastructure-debugger-snapshot.json
+  --json-file /var/lib/ai-infrastructure-debugger/snapshot.json
 ```
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -r demo_app/requirements.txt
-python3 dashboard/server.py --host 0.0.0.0 --port 8080
-```
-
-Then open `http://<vm-ip-address>:8080` from the Mac. See
+Deploying with `bash scripts/deploy-demo.sh` starts PostgreSQL, the dashboard,
+the OpenTelemetry Collector, and the demo services. Open
+`http://<vm-ip-address>:30081` from the Mac. See
 [`dashboard/README.md`](dashboard/README.md) for the live and sample-data modes.
 
 With k3s and the demo application running, container calculation, Kubernetes

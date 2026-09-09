@@ -62,9 +62,9 @@ From the repository root on the VM:
 bash scripts/build-and-import-images.sh
 ```
 
-The script builds the three images with Docker, saves them to a temporary
-archive, and imports them into the k3s containerd image store. No remote image
-registry is required.
+The script builds the three application images and the dashboard image with
+Docker, saves them to a temporary archive, and imports them into the k3s
+containerd image store. No remote image registry is required.
 
 ## 3. Deploy the application
 
@@ -72,10 +72,12 @@ registry is required.
 bash scripts/deploy-demo.sh
 ```
 
-There should be one running pod for each component plus the telemetry Collector:
+There should be pods for PostgreSQL, the dashboard, the telemetry Collector,
+and each application component:
 
 ```bash
 sudo k3s kubectl get pods -n infrastructure-demo
+sudo k3s kubectl get pvc,pv -n infrastructure-demo
 ```
 
 ## 4. Call the application
@@ -92,7 +94,8 @@ From the VM or Mac, replace `<vm-ip>` below:
 curl http://<vm-ip>:30080/api/order
 ```
 
-You can also open `http://<vm-ip>:30080` in a browser. A successful response
+You can also open `http://<vm-ip>:30080` for the demo and
+`http://<vm-ip>:30081` for the telemetry dashboard. A successful order response
 contains nested results from `frontend`, `checkout`, and `payment`, all sharing
 the same `request_id` and `trace_id`. OpenTelemetry injects the trace context
 into each service-to-service HTTP request; the request does not pass through the
@@ -104,6 +107,7 @@ the NodePort:
 
 ```bash
 sudo ufw allow 30080/tcp
+sudo ufw allow 30081/tcp
 ```
 
 ## Inspect and update
@@ -132,9 +136,10 @@ output to isolate that one request:
 sudo k3s kubectl logs -n infrastructure-demo deployment/otel-collector --since=5m | grep -i '<trace-id>'
 ```
 
-The current Collector uses its debug exporter, so telemetry is visible in logs
-but is not stored permanently yet. A trace/metric store and dashboard query path
-can be added after this data path is validated.
+The Collector keeps the debug exporter for inspection and also sends traces to
+the dashboard backend for PostgreSQL storage. Metrics stay debug-only because
+the one-minute request, error, and latency summaries are derived from server
+spans without double counting.
 
 Show logs from all three components:
 

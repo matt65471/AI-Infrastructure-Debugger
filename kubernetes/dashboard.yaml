@@ -1,0 +1,170 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telemetry-dashboard
+  namespace: infrastructure-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: telemetry-dashboard
+  template:
+    metadata:
+      labels:
+        app: telemetry-dashboard
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: dashboard
+          image: infrastructure-debugger/dashboard:v1
+          imagePullPolicy: Never
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: telemetry-postgres
+                  key: database-url
+            - name: TELEMETRY_SNAPSHOT_FILE
+              value: /var/lib/ai-infrastructure-debugger/snapshot.json
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /api/ready
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          volumeMounts:
+            - name: snapshots
+              mountPath: /var/lib/ai-infrastructure-debugger
+              readOnly: true
+            - name: temporary
+              mountPath: /tmp
+      volumes:
+        - name: snapshots
+          hostPath:
+            path: /var/lib/ai-infrastructure-debugger
+            type: DirectoryOrCreate
+        - name: temporary
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: telemetry-dashboard
+  namespace: infrastructure-demo
+spec:
+  type: NodePort
+  selector:
+    app: telemetry-dashboard
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      nodePort: 30081
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: telemetry-rollup
+  namespace: infrastructure-demo
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        spec:
+          restartPolicy: OnFailure
+          automountServiceAccountToken: false
+          containers:
+            - name: rollup
+              image: infrastructure-debugger/dashboard:v1
+              imagePullPolicy: Never
+              command: ["python3", "maintenance.py", "rollup"]
+              workingDir: /app/dashboard
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: telemetry-postgres
+                      key: database-url
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 64Mi
+                limits:
+                  cpu: 250m
+                  memory: 192Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: telemetry-retention
+  namespace: infrastructure-demo
+spec:
+  schedule: "15 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        spec:
+          restartPolicy: OnFailure
+          automountServiceAccountToken: false
+          containers:
+            - name: retention
+              image: infrastructure-debugger/dashboard:v1
+              imagePullPolicy: Never
+              command: ["python3", "maintenance.py", "retention"]
+              workingDir: /app/dashboard
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: telemetry-postgres
+                      key: database-url
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 64Mi
+                limits:
+                  cpu: 250m
+                  memory: 192Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
