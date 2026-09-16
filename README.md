@@ -174,43 +174,227 @@ Unix milliseconds and the Linux hostname to the existing host-wide CPU,
 memory, network, TCP, and disk metrics. The hostname is local Linux identity;
 each matched container also reports the node name assigned by Kubernetes.
 
-## Build And Run
+## Run The Complete System
 
-This project must run on Linux because it reads Linux-specific virtual files
-under `/proc`. Currently, I am running this on a Linux VM on my Mac using UTM and the latest Linux version downloaded
-from Ubuntu.
+This project must run on Linux because the host collector reads Linux-specific
+files under `/proc` and `/sys/fs/cgroup`. The expected development environment
+is an Ubuntu VM running k3s.
 
-Install build tools on an Ubuntu VM:
+### First-time VM setup
+
+Install the build and container tools:
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential cmake git python3 python3-venv
+sudo apt install -y build-essential cmake curl docker.io git openssl python3 python3-venv
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"
 ```
 
-Build and run:
+Log out and back in after adding yourself to the Docker group, then verify:
+
+```bash
+docker version
+```
+
+Install k3s once:
+
+```bash
+curl -sfL https://get.k3s.io | sh -
+sudo k3s kubectl get nodes
+```
+
+### Start or redeploy everything
+
+Run these commands from the repository on the VM whenever application,
+dashboard, Collector, or Kubernetes files have changed:
+
+Before rebuilding, make sure the VM checkout contains the latest source. A
+Docker rebuild cannot include fixes that only exist in a different checkout.
+If the repository is synchronized through Git, update it before continuing:
 
 ```bash
 cd ~/AI-Infrastructure-Debugger
-rm -rf agent/build
-cmake -S agent -B agent/build
-cmake --build agent/build
-ctest --test-dir agent/build --output-on-failure
-sudo ./agent/build/telemetry_agent
+git pull --ff-only
 ```
 
-Stop the agent with `Ctrl+C`.
+```bash
+cd ~/AI-Infrastructure-Debugger
 
-To feed the k3s dashboard and PostgreSQL history, run the agent on the VM:
+sudo systemctl start docker
+sudo systemctl start k3s
+sudo k3s kubectl wait --for=condition=Ready node --all --timeout=120s
+
+cmake -S agent -B agent/build -DBUILD_TESTING=ON
+cmake --build agent/build
+ctest --test-dir agent/build --output-on-failure
+
+bash scripts/build-and-import-images.sh
+bash scripts/deploy-demo.sh
+```
+
+The deployment script creates or updates PostgreSQL, the dashboard,
+OpenTelemetry Collector, and the frontend, checkout, and payment services. It
+preserves the existing PostgreSQL Secret and retained volume.
+
+Verify that the workloads are ready:
 
 ```bash
+sudo k3s kubectl get pods,statefulset,pvc,services,cronjobs \
+  -n infrastructure-demo
+```
+
+### Start the host collector
+
+Run the collector in a separate VM terminal and leave it running:
+
+```bash
+cd ~/AI-Infrastructure-Debugger
+
 sudo ./agent/build/telemetry_agent \
   --json-file /var/lib/ai-infrastructure-debugger/snapshot.json
 ```
 
-Deploying with `bash scripts/deploy-demo.sh` starts PostgreSQL, the dashboard,
-the OpenTelemetry Collector, and the demo services. Open
-`http://<vm-ip-address>:30081` from the Mac. See
-[`dashboard/README.md`](dashboard/README.md) for the live and sample-data modes.
+The path is important. Do **not** use the old
+`/tmp/ai-infrastructure-debugger-snapshot.json` path: the dashboard pod mounts
+and reads `/var/lib/ai-infrastructure-debugger/snapshot.json`.
+
+Confirm that the expected file changes every second:
+
+```bash
+watch -n 1 stat /var/lib/ai-infrastructure-debugger/snapshot.json
+```
+
+Stop the collector with `Ctrl+C`.
+
+### Open and exercise the system
+
+Find the VM address:
+
+```bash
+hostname -I
+```
+
+From the Mac, open:
+
+```text
+Demo application: http://<vm-ip-address>:30080
+Dashboard:        http://<vm-ip-address>:30081
+```
+
+Generate a single distributed request:
+
+```bash
+curl http://<vm-ip-address>:30080/api/order
+```
+
+To make the one-minute charts easier to see, generate traffic across a minute
+boundary:
+
+```bash
+for i in {1..40}; do
+  curl -s http://<vm-ip-address>:30080/api/order >/dev/null
+  sleep 2
+done
+```
+
+The live snapshot updates every second. Historical charts contain one-minute
+buckets, so wait through a minute boundary and allow up to another 15 seconds
+for the dashboard poll. Missing time before collection started remains an
+explicit gap instead of being filled with invented data.
+
+### Verify telemetry and rollups
+
+Application traces should be accepted with `200 OK`:
+
+```bash
+sudo k3s kubectl logs -n infrastructure-demo \
+  deployment/telemetry-dashboard --since=5m | grep '/v1/traces'
+```
+
+Check the Collector for export errors:
+
+```bash
+sudo k3s kubectl logs -n infrastructure-demo \
+  deployment/otel-collector --since=5m
+```
+
+Inspect stored spans:
+
+```bash
+sudo k3s kubectl exec -n infrastructure-demo postgres-0 -- \
+  psql -U telemetry -d telemetry -c \
+  "SELECT count(*) AS spans, max(started_at) AS latest_span FROM telemetry.spans;"
+```
+
+Inspect the latest one-minute summaries:
+
+```bash
+sudo k3s kubectl exec -n infrastructure-demo postgres-0 -- \
+  psql -U telemetry -d telemetry -c \
+  "SELECT bucket, deployment_name, request_count, error_count, p95_latency_ms
+   FROM telemetry.service_rollups_1m
+   WHERE http_route = ''
+   ORDER BY bucket DESC, deployment_name
+   LIMIT 20;"
+```
+
+If needed, recompute the five most recently completed minutes immediately:
+
+```bash
+sudo k3s kubectl exec -n infrastructure-demo \
+  deployment/telemetry-dashboard -- python3 maintenance.py rollup
+```
+
+See [`dashboard/README.md`](dashboard/README.md) for additional storage and
+dashboard details.
+
+### Restart after a VM reboot
+
+The Kubernetes workloads restart automatically with k3s. Normally, only these
+commands are needed after a reboot:
+
+```bash
+sudo systemctl start docker
+sudo systemctl start k3s
+sudo k3s kubectl get pods -n infrastructure-demo
+
+cd ~/AI-Infrastructure-Debugger
+sudo ./agent/build/telemetry_agent \
+  --json-file /var/lib/ai-infrastructure-debugger/snapshot.json
+```
+
+Rebuild and redeploy only when the source code, images, or Kubernetes manifests
+have changed.
+
+### Troubleshooting a frozen or empty dashboard
+
+Check which snapshot path the running collector uses:
+
+```bash
+ps -ef | grep '[t]elemetry_agent'
+```
+
+It must show:
+
+```text
+--json-file /var/lib/ai-infrastructure-debugger/snapshot.json
+```
+
+Compare snapshot timestamps:
+
+```bash
+stat /var/lib/ai-infrastructure-debugger/snapshot.json
+stat /tmp/ai-infrastructure-debugger-snapshot.json 2>/dev/null || true
+```
+
+If `/tmp/...` is changing while `/var/lib/...` is stale, stop the collector and
+restart it with the command in **Start the host collector**.
+
+If node history updates but Application health is empty, check that trace
+requests return `200` rather than `400`, then confirm spans and rollups with the
+queries above. Browser `304 Not Modified` responses for `app.js` and
+`styles.css` are normal cache validation and are not errors.
 
 With k3s and the demo application running, container calculation, Kubernetes
 identity, pod/Deployment aggregation, and Events are working when the output
@@ -228,10 +412,12 @@ cgroup enforcement helps reveal configuration/runtime mismatches. `100%` CPU
 means one fully used core and a multi-core container can exceed `100%`. A newly
 seen container reports `na` for CPU until it has two samples; unlimited memory
 reports `na` for memory percentage. Run the agent with `sudo` on the k3s VM so
-it can read all host processes and use k3s cluster credentials:
+it can read all host processes and use k3s cluster credentials. Always include
+the dashboard snapshot path:
 
 ```bash
-sudo ./agent/build/telemetry_agent
+sudo ./agent/build/telemetry_agent \
+  --json-file /var/lib/ai-infrastructure-debugger/snapshot.json
 ```
 
 When Kubernetes identity matches, each container entry also includes:
