@@ -202,7 +202,7 @@ function renderNode(snapshot) {
   </section>
 
   <section class="section two-column">
-    <article class="panel"><div class="section-heading"><h2>Resource trend</h2><p>${esc(nodeHistorySummary())}</p></div>${state.historyError ? `<p class="lede history-unavailable">Historical telemetry unavailable: ${esc(state.historyError)}</p>` : `<div class="chart-wrap resource-chart-wrap"><canvas id="resource-chart" aria-label="CPU and memory usage over the last hour"></canvas></div>`}</article>
+    <article class="panel"><div class="section-heading"><h2>Resource trend</h2><p>Y: usage (%) · X: time (last 60 minutes) · ${esc(nodeHistorySummary())}</p></div>${state.historyError ? `<p class="lede history-unavailable">Historical telemetry unavailable: ${esc(state.historyError)}</p>` : `<div class="chart-wrap resource-chart-wrap"><canvas id="resource-chart" aria-label="CPU and memory usage percentages over the last 60 minutes"></canvas></div>`}</article>
     <article class="panel"><div class="section-heading"><h2>Node traffic</h2><p>Current rate</p></div>
       <table class="metric-table"><tbody>
         <tr><th>Network receive</th><td>${bytes(node.network_rx_bytes_per_second)}/s</td></tr>
@@ -267,8 +267,8 @@ function renderDeployment(snapshot, namespace, name) {
     <section class="section"><div class="section-heading"><h2>Application history</h2><p>Last 60 completed one-minute buckets</p></div>
       ${state.historyError ? `<div class="panel history-unavailable"><p class="lede">Historical telemetry unavailable: ${esc(state.historyError)}</p></div>` : `
       <div class="two-column">
-        <article class="panel"><div class="section-heading"><h2>Traffic and errors</h2><p>Requests per minute</p></div><div class="chart-wrap"><canvas id="request-chart" aria-label="Request and error trend chart"></canvas></div></article>
-        <article class="panel"><div class="section-heading"><h2>Latency</h2><p>P95 milliseconds</p></div><div class="chart-wrap"><canvas id="latency-chart" aria-label="P95 latency trend chart"></canvas></div></article>
+        <article class="panel"><div class="section-heading"><h2>Traffic and errors</h2><p>Y: requests/min · X: time (last 60 minutes)</p></div><div class="chart-wrap"><canvas id="request-chart" aria-label="Requests per minute and errors over the last 60 minutes"></canvas></div></article>
+        <article class="panel"><div class="section-heading"><h2>Latency</h2><p>Y: milliseconds · X: time (last 60 minutes)</p></div><div class="chart-wrap"><canvas id="latency-chart" aria-label="P95 latency in milliseconds over the last 60 minutes"></canvas></div></article>
       </div>
       <div class="section-heading route-heading"><h2>Routes</h2><p>Latest completed minute</p></div>${renderRouteRollups(rollups?.routes || [])}`}
     </section>
@@ -480,7 +480,7 @@ function drawResourceChart() {
   context.fillStyle = "#b9d0e3"; context.fillText("Memory", plot.left + 82, 9);
 }
 
-function drawSeriesChart(canvasId, series, definitions) {
+function drawSeriesChart(canvasId, series, definitions, options = {}) {
   const canvas = document.querySelector(`#${canvasId}`);
   if (!canvas || !series?.length) return;
   const rect = canvas.getBoundingClientRect();
@@ -491,14 +491,53 @@ function drawSeriesChart(canvasId, series, definitions) {
   context.scale(scale, scale);
   const width = rect.width;
   const height = rect.height;
-  const padding = 16;
   const values = definitions.flatMap((definition) => series.map((row) => row[definition.key]).filter((value) => value != null));
-  const maximum = Math.max(1, ...values);
-  context.strokeStyle = "#1c3248";
-  [0, 0.5, 1].forEach((ratio) => {
-    const y = padding + (height - padding * 2) * (1 - ratio);
-    context.beginPath(); context.moveTo(padding, y); context.lineTo(width - padding, y); context.stroke();
+  const rawMaximum = Math.max(options.minimumMaximum || 1, ...values);
+  const magnitude = 10 ** Math.floor(Math.log10(rawMaximum));
+  const normalized = rawMaximum / magnitude;
+  const niceMaximum = (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10) * magnitude;
+  const plot = { left: 58, right: width - 14, top: 28, bottom: height - 38 };
+  const plotWidth = Math.max(1, plot.right - plot.left);
+  const plotHeight = Math.max(1, plot.bottom - plot.top);
+  const formatY = options.formatY || ((value) => number(value, value < 10 ? 1 : 0));
+
+  context.font = "10px system-ui";
+  context.textBaseline = "middle";
+  [0, 0.25, 0.5, 0.75, 1].forEach((ratio) => {
+    const y = plot.bottom - plotHeight * ratio;
+    context.strokeStyle = ratio === 0 ? "#36516b" : "#1c3248";
+    context.lineWidth = 1;
+    context.beginPath(); context.moveTo(plot.left, y); context.lineTo(plot.right, y); context.stroke();
+    context.fillStyle = "#8da4ba";
+    context.textAlign = "right";
+    context.fillText(formatY(niceMaximum * ratio), plot.left - 8, y);
   });
+
+  const tickIndexes = [...new Set([0, Math.floor((series.length - 1) / 2), series.length - 1])];
+  tickIndexes.forEach((index, position) => {
+    const x = plot.left + plotWidth * index / Math.max(1, series.length - 1);
+    const bucket = new Date(series[index].bucket);
+    const label = Number.isNaN(bucket.getTime())
+      ? ""
+      : bucket.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    context.strokeStyle = "#1c3248";
+    context.beginPath(); context.moveTo(x, plot.top); context.lineTo(x, plot.bottom); context.stroke();
+    context.fillStyle = "#8da4ba";
+    context.textAlign = position === 0 ? "left" : position === tickIndexes.length - 1 ? "right" : "center";
+    context.fillText(label, x, plot.bottom + 15);
+  });
+
+  context.save();
+  context.translate(13, plot.top + plotHeight / 2);
+  context.rotate(-Math.PI / 2);
+  context.fillStyle = "#8da4ba";
+  context.textAlign = "center";
+  context.fillText(options.yLabel || "Value", 0, 0);
+  context.restore();
+  context.fillStyle = "#8da4ba";
+  context.textAlign = "center";
+  context.fillText(options.xLabel || "Time · last 60 minutes", plot.left + plotWidth / 2, height - 7);
+
   definitions.forEach((definition, definitionIndex) => {
     context.strokeStyle = definition.color;
     context.lineWidth = 2;
@@ -507,19 +546,28 @@ function drawSeriesChart(canvasId, series, definitions) {
     series.forEach((row, index) => {
       const value = row[definition.key];
       if (value == null) { drawing = false; return; }
-      const x = padding + (width - padding * 2) * index / Math.max(1, series.length - 1);
-      const y = padding + (height - padding * 2) * (1 - value / maximum);
+      const x = plot.left + plotWidth * index / Math.max(1, series.length - 1);
+      const y = plot.bottom - plotHeight * Math.min(niceMaximum, Math.max(0, value)) / niceMaximum;
       drawing ? context.lineTo(x, y) : context.moveTo(x, y);
       drawing = true;
     });
     context.stroke();
+    series.forEach((row, index) => {
+      const value = row[definition.key];
+      if (value == null) return;
+      const x = plot.left + plotWidth * index / Math.max(1, series.length - 1);
+      const y = plot.bottom - plotHeight * Math.min(niceMaximum, Math.max(0, value)) / niceMaximum;
+      context.fillStyle = definition.color;
+      context.beginPath(); context.arc(x, y, 2.2, 0, Math.PI * 2); context.fill();
+    });
     context.font = "11px system-ui";
+    context.textAlign = "left";
+    const legendX = plot.left + definitionIndex * 104;
     context.fillStyle = definition.color;
-    context.fillText(definition.label, padding + definitionIndex * 92, 12);
+    context.fillRect(legendX, 8, 14, 2);
+    context.fillStyle = "#b9d0e3";
+    context.fillText(definition.label, legendX + 20, 9);
   });
-  context.fillStyle = "#8da4ba";
-  context.font = "10px system-ui";
-  context.fillText(number(maximum, 1), width - 45, 12);
 }
 
 function drawDeploymentCharts() {
@@ -530,10 +578,10 @@ function drawDeploymentCharts() {
   drawSeriesChart("request-chart", rollups.series, [
     { key: "request_count", label: "Requests", color: "#42d6c6" },
     { key: "error_count", label: "Errors", color: "#ff6b7a" },
-  ]);
+  ], { yLabel: "Requests / minute", minimumMaximum: 4, formatY: (value) => number(value, 0) });
   drawSeriesChart("latency-chart", rollups.series, [
     { key: "p95_latency_ms", label: "P95 latency", color: "#5ba9ff" },
-  ]);
+  ], { yLabel: "Latency (ms)", formatY: (value) => `${number(value, value < 10 ? 1 : 0)}` });
 }
 
 function bindNavigation() {
