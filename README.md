@@ -157,10 +157,11 @@ missing, restarting, throttled, or being OOM-killed.
 `TelemetryCollector`, calls `collect()` once per second, and prints the combined
 snapshot.
 
-For the dashboard, `--json-file PATH` atomically replaces one machine-readable
-snapshot file every second. The dashboard server reads that file and never
-needs root access or Kubernetes credentials. `--json` writes the same document
-to standard output for other integrations.
+In the deployed system, the agent sends each snapshot to the authenticated
+`POST /v1/infra-snapshots` endpoint. The backend persists it to PostgreSQL
+before exposing it as Live state. A bounded disk spool protects delivery while
+the API or database is unavailable. `--json` writes snapshots to standard
+output for diagnostics without participating in ingestion.
 
 Example output:
 
@@ -186,7 +187,7 @@ Install the build and container tools:
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential cmake curl docker.io git openssl python3 python3-venv
+sudo apt install -y build-essential cmake curl docker.io git libcurl4-openssl-dev openssl python3 python3-venv
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER"
 ```
@@ -231,7 +232,12 @@ ctest --test-dir agent/build --output-on-failure
 
 bash scripts/build-and-import-images.sh
 bash scripts/deploy-demo.sh
+bash scripts/install-host-collector.sh
 ```
+
+If the old `--json-file` collector is still running in another terminal, stop
+that process with `Ctrl+C`; the systemd service is now the only deployed
+collector.
 
 The deployment script creates or updates PostgreSQL, the dashboard,
 OpenTelemetry Collector, and the frontend, checkout, and payment services. It
@@ -244,28 +250,26 @@ sudo k3s kubectl get pods,statefulset,pvc,services,cronjobs \
   -n infrastructure-demo
 ```
 
-### Start the host collector
+### Verify the host collector
 
-Run the collector in a separate VM terminal and leave it running:
-
-```bash
-cd ~/AI-Infrastructure-Debugger
-
-sudo ./agent/build/telemetry_agent \
-  --json-file /var/lib/ai-infrastructure-debugger/snapshot.json
-```
-
-The path is important. Do **not** use the old
-`/tmp/ai-infrastructure-debugger-snapshot.json` path: the dashboard pod mounts
-and reads `/var/lib/ai-infrastructure-debugger/snapshot.json`.
-
-Confirm that the expected file changes every second:
+The installation script runs the collector as a systemd service. It posts each
+snapshot to the authenticated ingestion API and queues unsent snapshots under
+`/var/lib/ai-infrastructure-debugger/spool`:
 
 ```bash
-watch -n 1 stat /var/lib/ai-infrastructure-debugger/snapshot.json
+sudo systemctl status telemetry-agent --no-pager
+sudo journalctl -u telemetry-agent -f
 ```
 
-Stop the collector with `Ctrl+C`.
+Inspect the retry queue and backend ingestion responses with:
+
+```bash
+sudo find /var/lib/ai-infrastructure-debugger/spool -maxdepth 1 -name '*.json' | wc -l
+sudo k3s kubectl logs -n infrastructure-demo deployment/telemetry-dashboard --since=5m | grep '/v1/infra-snapshots'
+```
+
+The queue is normally empty or briefly contains the in-flight sample. A growing
+queue means the API, token, network, or PostgreSQL is unavailable.
 
 ### Open and exercise the system
 
@@ -298,10 +302,11 @@ for i in {1..40}; do
 done
 ```
 
-The live snapshot updates every second. Historical charts contain one-minute
-buckets, so wait through a minute boundary and allow up to another 15 seconds
-for the dashboard poll. Missing time before collection started remains an
-explicit gap instead of being filled with invented data.
+Use the dashboard header to switch between **Live** and **Historical**. Live
+updates every second and shows the current hierarchy. Historical offers 1-hour,
+6-hour, and 24-hour PostgreSQL-backed ranges. Historical charts contain
+one-minute buckets, so wait through a minute boundary and allow up to another
+15 seconds for the dashboard poll.
 
 ### Verify telemetry and rollups
 
@@ -358,10 +363,7 @@ commands are needed after a reboot:
 sudo systemctl start docker
 sudo systemctl start k3s
 sudo k3s kubectl get pods -n infrastructure-demo
-
-cd ~/AI-Infrastructure-Debugger
-sudo ./agent/build/telemetry_agent \
-  --json-file /var/lib/ai-infrastructure-debugger/snapshot.json
+sudo systemctl status telemetry-agent --no-pager
 ```
 
 Rebuild and redeploy only when the source code, images, or Kubernetes manifests
@@ -369,27 +371,22 @@ have changed.
 
 ### Troubleshooting a frozen or empty dashboard
 
-Check which snapshot path the running collector uses:
+Check the collector service and ingestion health:
 
 ```bash
-ps -ef | grep '[t]elemetry_agent'
+sudo systemctl status telemetry-agent --no-pager
+sudo journalctl -u telemetry-agent --since=-5m
+curl -s http://127.0.0.1:30081/api/health | python3 -m json.tool
 ```
 
-It must show:
-
-```text
---json-file /var/lib/ai-infrastructure-debugger/snapshot.json
-```
-
-Compare snapshot timestamps:
+Check whether delivery is backing up:
 
 ```bash
-stat /var/lib/ai-infrastructure-debugger/snapshot.json
-stat /tmp/ai-infrastructure-debugger-snapshot.json 2>/dev/null || true
+sudo find /var/lib/ai-infrastructure-debugger/spool -maxdepth 1 -name '*.json' -ls
 ```
 
-If `/tmp/...` is changing while `/var/lib/...` is stale, stop the collector and
-restart it with the command in **Start the host collector**.
+If the queue grows, verify PostgreSQL and the dashboard are Ready, then restart
+the service after correcting the failure. Queued snapshots drain oldest-first.
 
 If node history updates but Application health is empty, check that trace
 requests return `200` rather than `400`, then confirm spans and rollups with the
@@ -413,11 +410,10 @@ means one fully used core and a multi-core container can exceed `100%`. A newly
 seen container reports `na` for CPU until it has two samples; unlimited memory
 reports `na` for memory percentage. Run the agent with `sudo` on the k3s VM so
 it can read all host processes and use k3s cluster credentials. Always include
-the dashboard snapshot path:
+the HTTP ingestion configuration:
 
 ```bash
-sudo ./agent/build/telemetry_agent \
-  --json-file /var/lib/ai-infrastructure-debugger/snapshot.json
+sudo systemctl cat telemetry-agent
 ```
 
 When Kubernetes identity matches, each container entry also includes:

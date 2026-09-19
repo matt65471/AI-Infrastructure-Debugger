@@ -14,6 +14,10 @@
         <span><strong>Infrastructure</strong><small>Debugger</small></span>
       </a>
       <div class="topbar-status">
+        <nav class="mode-toggle" aria-label="Telemetry mode">
+          <a id="live-mode" href="#/">Live</a>
+          <a id="history-mode" href="#/history/60">Historical</a>
+        </nav>
         <span id="connection-status" class="status-pill waiting">Waiting for data</span>
         <span id="last-updated" class="timestamp">No snapshot yet</span>
       </div>
@@ -26,7 +30,7 @@
         <section class="empty-state">
           <div class="spinner" aria-hidden="true"></div>
           <h1>Connecting to the node</h1>
-          <p>Waiting for the first telemetry snapshot.</p>
+          <p>Waiting for telemetry.</p>
         </section>
       </div>
     </main>

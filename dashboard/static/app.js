@@ -2,6 +2,7 @@ const state = {
   snapshot: null,
   overviewRollups: null,
   deploymentRollups: {},
+  historicalMinutes: 60,
   historyError: null,
   error: null,
 };
@@ -11,6 +12,8 @@ const breadcrumbs = document.querySelector("#breadcrumbs");
 const alertBox = document.querySelector("#alert");
 const connectionStatus = document.querySelector("#connection-status");
 const lastUpdated = document.querySelector("#last-updated");
+const liveMode = document.querySelector("#live-mode");
+const historyMode = document.querySelector("#history-mode");
 
 const esc = (value) => String(value ?? "")
   .replaceAll("&", "&amp;")
@@ -20,6 +23,27 @@ const esc = (value) => String(value ?? "")
   .replaceAll("'", "&#039;");
 
 const pathFor = (...parts) => `#/${parts.map((part) => encodeURIComponent(part)).join("/")}`;
+const HISTORY_RANGES = new Set([60, 360, 1440]);
+const historyLabel = (minutes) => minutes === 60 ? "1 hour" : minutes === 360 ? "6 hours" : "24 hours";
+const chartTimeLabel = (bucket, minutes) => {
+  const value = new Date(bucket);
+  if (Number.isNaN(value.getTime())) return "";
+  return minutes >= 1440
+    ? value.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+    : value.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+};
+
+function currentRoute() {
+  const parts = window.location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
+  if (parts[0] !== "history") return { mode: "live", parts };
+  const requested = Number(parts[1]);
+  const minutes = HISTORY_RANGES.has(requested) ? requested : 60;
+  return { mode: "history", minutes, parts: parts.slice(2) };
+}
+
+function historicalPath(minutes, ...parts) {
+  return pathFor("history", minutes, ...parts);
+}
 const number = (value, digits = 1) => Number(value ?? 0).toLocaleString(undefined, { maximumFractionDigits: digits });
 const percent = (value, available = true) => available ? `${number(value, 1)}%` : "n/a";
 const cores = (value, available = true) => available ? `${number(value, 3)} cores` : "n/a";
@@ -89,13 +113,6 @@ function deploymentCard(deployment) {
   </button>`;
 }
 
-function latestRollup(namespace, deploymentName) {
-  const deployment = state.overviewRollups?.deployments?.find((item) => (
-    item.namespace === namespace && item.deployment_name === deploymentName
-  ));
-  return deployment?.latest || null;
-}
-
 function nodeHistorySummary() {
   const series = state.overviewRollups?.node || [];
   const observed = series.filter((item) => (
@@ -116,14 +133,15 @@ function applicationHealthTable() {
   return `<div class="panel table-scroll"><table class="event-table">
     <thead><tr><th>Deployment</th><th>Requests/min</th><th>Error rate</th><th>P95 latency</th><th>CPU average</th><th>Memory average</th></tr></thead>
     <tbody>${deployments.map((deployment) => {
-      const latest = deployment.latest;
+      const summary = deployment.summary || {};
+      const perMinute = summary.request_count == null ? null : summary.request_count / (state.overviewRollups?.window_minutes || 1);
       return `<tr>
-        <td><a class="table-link" href="${pathFor("deployment", deployment.namespace, deployment.deployment_name)}">${esc(deployment.deployment_name)}</a><span class="subtle table-subtitle">${esc(deployment.namespace)}</span></td>
-        <td>${latest?.request_count ?? "—"}</td>
-        <td>${latest?.error_rate_percent == null ? "—" : percent(latest.error_rate_percent)}</td>
-        <td>${latest?.p95_latency_ms == null ? "—" : `${number(latest.p95_latency_ms, 1)} ms`}</td>
-        <td>${latest?.average_cpu_percent == null ? "—" : percent(latest.average_cpu_percent)}</td>
-        <td>${latest?.average_memory_bytes == null ? "—" : bytes(latest.average_memory_bytes)}</td>
+        <td><a class="table-link" href="${historicalPath(state.historicalMinutes, "deployment", deployment.namespace, deployment.deployment_name)}">${esc(deployment.deployment_name)}</a><span class="subtle table-subtitle">${esc(deployment.namespace)}</span></td>
+        <td>${perMinute == null ? "—" : number(perMinute, 1)}</td>
+        <td>${summary.error_rate_percent == null ? "—" : percent(summary.error_rate_percent)}</td>
+        <td>${summary.p95_latency_ms == null ? "—" : `${number(summary.p95_latency_ms, 1)} ms`}</td>
+        <td>${summary.average_cpu_percent == null ? "—" : percent(summary.average_cpu_percent)}</td>
+        <td>${summary.average_memory_bytes == null ? "—" : bytes(summary.average_memory_bytes)}</td>
       </tr>`;
     }).join("")}</tbody>
   </table></div>`;
@@ -201,8 +219,7 @@ function renderNode(snapshot) {
     ${metricCard("Deployments", deployments.length, `${snapshot.pods.length} observed pods`, "var(--green)")}
   </section>
 
-  <section class="section two-column">
-    <article class="panel"><div class="section-heading"><h2>Resource trend</h2><p>Y: usage (%) · X: time (last 60 minutes) · ${esc(nodeHistorySummary())}</p></div>${state.historyError ? `<p class="lede history-unavailable">Historical telemetry unavailable: ${esc(state.historyError)}</p>` : `<div class="chart-wrap resource-chart-wrap"><canvas id="resource-chart" aria-label="CPU and memory usage percentages over the last 60 minutes"></canvas></div>`}</article>
+  <section class="section">
     <article class="panel"><div class="section-heading"><h2>Node traffic</h2><p>Current rate</p></div>
       <table class="metric-table"><tbody>
         <tr><th>Network receive</th><td>${bytes(node.network_rx_bytes_per_second)}/s</td></tr>
@@ -215,15 +232,12 @@ function renderNode(snapshot) {
     </article>
   </section>
 
-  <section class="section"><div class="section-heading"><h2>Application health</h2><p>Latest completed one-minute bucket</p></div>${applicationHealthTable()}</section>
-
   <section class="section"><div class="section-heading"><h2>Deployments</h2><p>Choose a workload to inspect its pods</p></div>
     <div class="entity-grid">${deployments.length ? deployments.map(deploymentCard).join("") : `<div class="panel"><p class="lede">No Deployments were reported.</p></div>`}</div>
   </section>
 
   <section class="section"><div class="section-heading"><h2>Kubernetes events</h2><p>${snapshot.kubernetes_events.length} most recent events</p></div>${renderEvents(snapshot.kubernetes_events)}</section>
   ${rawDetails(node)}`;
-  requestAnimationFrame(drawResourceChart);
 }
 
 function renderDeployment(snapshot, namespace, name) {
@@ -231,8 +245,6 @@ function renderDeployment(snapshot, namespace, name) {
   if (!deployment) return renderNotFound("Deployment", name);
   const pods = snapshot.pods.filter((pod) => pod.namespace === namespace && pod.workload_kind === "Deployment" && pod.workload_name === name);
   const level = healthForDeployment(deployment);
-  const rollups = state.historyError ? null : state.deploymentRollups[`${namespace}/${name}`];
-  const latest = state.historyError ? null : latestRollup(namespace, name);
   setBreadcrumbs([{ label: snapshot.node.hostname, href: "#/" }, { label: name }]);
   app.innerHTML = `${heading("Deployment", name, `${namespace} · Kubernetes desired state combined with observed Linux usage.`, `<span class="status-pill ${level}">${healthLabel(level)}</span>`)}
     <section class="metric-grid">
@@ -242,9 +254,6 @@ function renderDeployment(snapshot, namespace, name) {
       ${metricCard("CPU throttled", `${number(deployment.throttled_usec_delta / 1000, 2)} ms`, "Since previous sample", "var(--amber)")}
       ${metricCard("OOM kills", number(deployment.oom_kill_delta, 0), "Since previous sample", "var(--red)")}
       ${metricCard("Restarts", number(deployment.restart_count, 0), `${deployment.observed_pod_count} observed pods`, "var(--amber)")}
-      ${metricCard("Requests/min", latest?.request_count ?? "—", "Latest completed minute", "var(--green)")}
-      ${metricCard("Error rate", latest?.error_rate_percent == null ? "—" : percent(latest.error_rate_percent), `${latest?.error_count ?? 0} failed requests`, "var(--red)")}
-      ${metricCard("P95 latency", latest?.p95_latency_ms == null ? "—" : `${number(latest.p95_latency_ms, 1)} ms`, "Latest completed minute", "var(--blue)")}
     </section>
     <section class="section two-column">
       <article class="panel"><div class="section-heading"><h2>Configuration and rollout</h2><p>Requested vs enforced</p></div><table class="metric-table"><tbody>
@@ -264,17 +273,8 @@ function renderDeployment(snapshot, namespace, name) {
         <tr><th>OOM kills</th><td>${deployment.oom_kill_delta}</td></tr>
       </tbody></table></article>
     </section>
-    <section class="section"><div class="section-heading"><h2>Application history</h2><p>Last 60 completed one-minute buckets</p></div>
-      ${state.historyError ? `<div class="panel history-unavailable"><p class="lede">Historical telemetry unavailable: ${esc(state.historyError)}</p></div>` : `
-      <div class="two-column">
-        <article class="panel"><div class="section-heading"><h2>Traffic and errors</h2><p>Y: requests/min · X: time (last 60 minutes)</p></div><div class="chart-wrap"><canvas id="request-chart" aria-label="Requests per minute and errors over the last 60 minutes"></canvas></div></article>
-        <article class="panel"><div class="section-heading"><h2>Latency</h2><p>Y: milliseconds · X: time (last 60 minutes)</p></div><div class="chart-wrap"><canvas id="latency-chart" aria-label="P95 latency in milliseconds over the last 60 minutes"></canvas></div></article>
-      </div>
-      <div class="section-heading route-heading"><h2>Routes</h2><p>Latest completed minute</p></div>${renderRouteRollups(rollups?.routes || [])}`}
-    </section>
     <section class="section"><div class="section-heading"><h2>Pods</h2><p>Choose a pod to inspect its containers</p></div><div class="entity-grid">${pods.length ? pods.map(podCard).join("") : `<div class="panel"><p class="lede">No running pod cgroups are currently visible for this Deployment.</p></div>`}</div></section>
     ${rawDetails(deployment)}`;
-  requestAnimationFrame(drawDeploymentCharts);
 }
 
 function renderRouteRollups(routes) {
@@ -286,6 +286,80 @@ function renderRouteRollups(routes) {
       <td>${number(route.average_latency_ms, 1)} ms</td><td>${number(route.p50_latency_ms, 1)} ms</td>
       <td>${number(route.p95_latency_ms, 1)} ms</td><td>${number(route.p99_latency_ms, 1)} ms</td>
     </tr>`).join("")}</tbody></table></div>`;
+}
+
+function historyRangeSelector(minutes, suffix = []) {
+  return `<div class="history-toolbar"><nav class="range-toggle" aria-label="Historical range">
+    ${[60, 360, 1440].map((value) => `<a class="${value === minutes ? "active" : ""}" href="${historicalPath(value, ...suffix)}">${value === 60 ? "1h" : value === 360 ? "6h" : "24h"}</a>`).join("")}
+  </nav></div>`;
+}
+
+function renderHistoricalEvents(events) {
+  if (!events?.length) return `<div class="panel"><p class="lede">No Kubernetes events were observed in this range.</p></div>`;
+  return `<div class="panel table-scroll"><table class="event-table">
+    <thead><tr><th>Severity</th><th>Reason</th><th>Object</th><th>Count</th><th>Message</th><th>Last seen</th></tr></thead>
+    <tbody>${events.map((event) => `<tr>
+      <td><span class="tag ${event.severity === 2 ? "danger" : "healthy"}">${event.severity === 2 ? "Warning" : "Normal"}</span></td>
+      <td>${esc(event.reason)}</td><td>${esc(`${event.details?.object_kind || "Object"}/${event.details?.object_name || "unknown"}`)}</td>
+      <td>${number(event.occurrence_count, 0)}</td><td class="event-message">${esc(event.message || "")}</td>
+      <td>${esc(new Date(event.last_seen_at).toLocaleString())}</td>
+    </tr>`).join("")}</tbody></table></div>`;
+}
+
+function renderHistoricalNode(minutes) {
+  state.historicalMinutes = minutes;
+  const history = state.overviewRollups;
+  setBreadcrumbs([{ label: "Historical analysis" }]);
+  if (!history || history.window_minutes !== minutes) {
+    app.innerHTML = `${heading("Historical", "Loading history", `Preparing the last ${historyLabel(minutes)} of persisted telemetry.`)}${historyRangeSelector(minutes)}<section class="empty-state"><div class="spinner"></div></section>`;
+    return;
+  }
+  const summary = history.node_summary || {};
+  const deployments = history.deployments || [];
+  const totalRequests = deployments.reduce((sum, item) => sum + Number(item.summary?.request_count || 0), 0);
+  const totalErrors = deployments.reduce((sum, item) => sum + Number(item.summary?.error_count || 0), 0);
+  const worstP95 = Math.max(0, ...deployments.map((item) => Number(item.summary?.p95_latency_ms || 0)));
+  app.innerHTML = `${heading("Historical analysis", `Last ${historyLabel(minutes)}`, "Persisted infrastructure and application telemetry. Missing samples remain visible as gaps.", `<span class="status-pill healthy">Stored telemetry</span>`)}
+    ${historyRangeSelector(minutes)}
+    <section class="metric-grid">
+      ${metricCard("Average CPU", summary.average_cpu_percent == null ? "—" : percent(summary.average_cpu_percent), `Maximum ${summary.maximum_cpu_percent == null ? "—" : percent(summary.maximum_cpu_percent)}`)}
+      ${metricCard("Average memory", summary.average_memory_percent == null ? "—" : percent(summary.average_memory_percent), `Maximum ${summary.maximum_memory_percent == null ? "—" : percent(summary.maximum_memory_percent)}`, "var(--blue)")}
+      ${metricCard("Requests", number(totalRequests, 0), `${number(totalRequests / minutes, 1)} per minute`, "var(--green)")}
+      ${metricCard("Errors", number(totalErrors, 0), totalRequests ? percent(totalErrors / totalRequests * 100) : "No requests", "var(--red)")}
+      ${metricCard("Worst deployment P95", worstP95 ? `${number(worstP95, 1)} ms` : "—", "Exact from server spans", "var(--amber)")}
+      ${metricCard("Deployments", deployments.length, `${history.events?.length || 0} events in range`, "var(--cyan)")}
+    </section>
+    <section class="section"><article class="panel"><div class="section-heading"><h2>Node resource trend</h2><p>Y: usage (%) · X: ${esc(historyLabel(minutes))} · ${esc(nodeHistorySummary())}</p></div>${state.historyError ? `<p class="lede history-unavailable">${esc(state.historyError)}</p>` : `<div class="chart-wrap resource-chart-wrap"><canvas id="resource-chart" aria-label="Historical CPU and memory usage percentages"></canvas></div>`}</article></section>
+    <section class="section"><div class="section-heading"><h2>Application health</h2><p>Aggregated across the selected range</p></div>${applicationHealthTable()}</section>
+    <section class="section"><div class="section-heading"><h2>Kubernetes events</h2><p>Observed in the selected range</p></div>${renderHistoricalEvents(history.events)}</section>`;
+  requestAnimationFrame(drawResourceChart);
+}
+
+function renderHistoricalDeployment(minutes, namespace, name) {
+  state.historicalMinutes = minutes;
+  const rollups = state.deploymentRollups[`${minutes}:${namespace}/${name}`];
+  setBreadcrumbs([{ label: "Historical analysis", href: historicalPath(minutes) }, { label: name }]);
+  if (!rollups) {
+    app.innerHTML = `${heading("Historical deployment", name, `Loading the last ${historyLabel(minutes)}.`)}${historyRangeSelector(minutes, ["deployment", namespace, name])}<section class="empty-state"><div class="spinner"></div></section>`;
+    return;
+  }
+  const summary = rollups.summary || {};
+  app.innerHTML = `${heading("Historical deployment", name, `${namespace} · Aggregated across the last ${historyLabel(minutes)}.`, `<span class="status-pill healthy">Stored telemetry</span>`)}
+    ${historyRangeSelector(minutes, ["deployment", namespace, name])}
+    <section class="metric-grid">
+      ${metricCard("Requests", summary.request_count ?? 0, `${number((summary.request_count || 0) / minutes, 1)} per minute`, "var(--green)")}
+      ${metricCard("Errors", summary.error_count ?? 0, summary.error_rate_percent == null ? "No requests" : percent(summary.error_rate_percent), "var(--red)")}
+      ${metricCard("P95 latency", summary.p95_latency_ms == null ? "—" : `${number(summary.p95_latency_ms, 1)} ms`, "Exact from server spans", "var(--blue)")}
+      ${metricCard("Average CPU", summary.average_cpu_percent == null ? "—" : percent(summary.average_cpu_percent), `Maximum ${summary.maximum_cpu_percent == null ? "—" : percent(summary.maximum_cpu_percent)}`)}
+      ${metricCard("Average memory", summary.average_memory_bytes == null ? "—" : bytes(summary.average_memory_bytes), `Maximum ${summary.maximum_memory_bytes == null ? "—" : bytes(summary.maximum_memory_bytes)}`, "var(--blue)")}
+      ${metricCard("Maximum latency", summary.maximum_latency_ms == null ? "—" : `${number(summary.maximum_latency_ms, 1)} ms`, historyLabel(minutes), "var(--amber)")}
+    </section>
+    <section class="section two-column">
+      <article class="panel"><div class="section-heading"><h2>Traffic and errors</h2><p>Y: requests/min · X: ${esc(historyLabel(minutes))}</p></div><div class="chart-wrap"><canvas id="request-chart" aria-label="Historical requests and errors"></canvas></div></article>
+      <article class="panel"><div class="section-heading"><h2>Latency</h2><p>Y: milliseconds · X: ${esc(historyLabel(minutes))}</p></div><div class="chart-wrap"><canvas id="latency-chart" aria-label="Historical P95 latency"></canvas></div></article>
+    </section>
+    <section class="section"><div class="section-heading"><h2>Routes</h2><p>Aggregated across the selected range</p></div>${renderRouteRollups(rollups.routes || [])}</section>`;
+  requestAnimationFrame(drawDeploymentCharts);
 }
 
 function renderPod(snapshot, uid) {
@@ -426,8 +500,7 @@ function drawResourceChart() {
   const tickIndexes = [0, Math.floor((history.length - 1) / 2), history.length - 1];
   tickIndexes.forEach((index, position) => {
     const x = plot.left + plotWidth * index / Math.max(1, history.length - 1);
-    const bucket = new Date(history[index].bucket);
-    const label = bucket.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const label = chartTimeLabel(history[index].bucket, state.historicalMinutes);
     context.strokeStyle = "#1c3248";
     context.beginPath(); context.moveTo(x, plot.top); context.lineTo(x, plot.bottom); context.stroke();
     context.fillStyle = "#8da4ba";
@@ -444,7 +517,7 @@ function drawResourceChart() {
   context.restore();
   context.fillStyle = "#8da4ba";
   context.textAlign = "center";
-  context.fillText("Time · last 60 minutes", plot.left + plotWidth / 2, height - 7);
+  context.fillText(`Time · last ${historyLabel(state.historicalMinutes)}`, plot.left + plotWidth / 2, height - 7);
 
   const drawLine = (selector, color) => {
     context.strokeStyle = color;
@@ -516,10 +589,7 @@ function drawSeriesChart(canvasId, series, definitions, options = {}) {
   const tickIndexes = [...new Set([0, Math.floor((series.length - 1) / 2), series.length - 1])];
   tickIndexes.forEach((index, position) => {
     const x = plot.left + plotWidth * index / Math.max(1, series.length - 1);
-    const bucket = new Date(series[index].bucket);
-    const label = Number.isNaN(bucket.getTime())
-      ? ""
-      : bucket.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const label = chartTimeLabel(series[index].bucket, state.historicalMinutes);
     context.strokeStyle = "#1c3248";
     context.beginPath(); context.moveTo(x, plot.top); context.lineTo(x, plot.bottom); context.stroke();
     context.fillStyle = "#8da4ba";
@@ -571,17 +641,17 @@ function drawSeriesChart(canvasId, series, definitions, options = {}) {
 }
 
 function drawDeploymentCharts() {
-  const parts = window.location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
-  if (parts[0] !== "deployment" || parts.length < 3) return;
-  const rollups = state.deploymentRollups[`${parts[1]}/${parts[2]}`];
+  const route = currentRoute();
+  if (route.mode !== "history" || route.parts[0] !== "deployment" || route.parts.length < 3) return;
+  const rollups = state.deploymentRollups[`${route.minutes}:${route.parts[1]}/${route.parts[2]}`];
   if (!rollups) return;
   drawSeriesChart("request-chart", rollups.series, [
     { key: "request_count", label: "Requests", color: "#42d6c6" },
     { key: "error_count", label: "Errors", color: "#ff6b7a" },
-  ], { yLabel: "Requests / minute", minimumMaximum: 4, formatY: (value) => number(value, 0) });
+  ], { yLabel: "Requests / minute", xLabel: `Time · last ${historyLabel(route.minutes)}`, minimumMaximum: 4, formatY: (value) => number(value, 0) });
   drawSeriesChart("latency-chart", rollups.series, [
     { key: "p95_latency_ms", label: "P95 latency", color: "#5ba9ff" },
-  ], { yLabel: "Latency (ms)", formatY: (value) => `${number(value, value < 10 ? 1 : 0)}` });
+  ], { yLabel: "Latency (ms)", xLabel: `Time · last ${historyLabel(route.minutes)}`, formatY: (value) => `${number(value, value < 10 ? 1 : 0)}` });
 }
 
 function bindNavigation() {
@@ -590,20 +660,63 @@ function bindNavigation() {
   });
 }
 
+function deploymentForLiveRoute(route) {
+  const snapshot = state.snapshot;
+  if (!snapshot) return null;
+  if (route.parts[0] === "deployment") return { namespace: route.parts[1], name: route.parts[2] };
+  if (route.parts[0] === "pod") {
+    const pod = snapshot.pods.find((item) => item.pod_uid === route.parts[1]);
+    return pod ? { namespace: pod.namespace, name: pod.workload_name } : null;
+  }
+  if (route.parts[0] === "container") {
+    const container = snapshot.containers.find((item) => item.container_id === route.parts[1]);
+    return container ? { namespace: container.namespace, name: container.workload_name } : null;
+  }
+  if (route.parts[0] === "process") {
+    const pid = Number(route.parts[1]);
+    const container = snapshot.containers.find((item) => item.process_ids.includes(pid));
+    return container ? { namespace: container.namespace, name: container.workload_name } : null;
+  }
+  return null;
+}
+
+function updateModeLinks(route) {
+  const deployment = route.mode === "history" && route.parts[0] === "deployment"
+    ? { namespace: route.parts[1], name: route.parts[2] }
+    : deploymentForLiveRoute(route);
+  liveMode.href = deployment ? pathFor("deployment", deployment.namespace, deployment.name) : "#/";
+  historyMode.href = deployment
+    ? historicalPath(route.minutes || state.historicalMinutes, "deployment", deployment.namespace, deployment.name)
+    : historicalPath(route.minutes || state.historicalMinutes);
+  liveMode.classList.toggle("active", route.mode === "live");
+  historyMode.classList.toggle("active", route.mode === "history");
+}
+
 function render() {
+  const route = currentRoute();
+  updateModeLinks(route);
+  if (route.mode === "history") {
+    if (route.parts[0] === "deployment" && route.parts.length >= 3) {
+      renderHistoricalDeployment(route.minutes, route.parts[1], route.parts[2]);
+    } else {
+      renderHistoricalNode(route.minutes);
+    }
+    bindNavigation();
+    return;
+  }
   const snapshot = state.snapshot;
   if (!snapshot) return;
-  const parts = window.location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
-  if (!parts.length) renderNode(snapshot);
-  else if (parts[0] === "deployment" && parts.length >= 3) renderDeployment(snapshot, parts[1], parts[2]);
-  else if (parts[0] === "pod" && parts[1]) renderPod(snapshot, parts[1]);
-  else if (parts[0] === "container" && parts[1]) renderContainer(snapshot, parts[1]);
-  else if (parts[0] === "process" && parts[1]) renderProcess(snapshot, parts[1]);
-  else renderNotFound("Page", parts.join("/"));
+  if (!route.parts.length) renderNode(snapshot);
+  else if (route.parts[0] === "deployment" && route.parts.length >= 3) renderDeployment(snapshot, route.parts[1], route.parts[2]);
+  else if (route.parts[0] === "pod" && route.parts[1]) renderPod(snapshot, route.parts[1]);
+  else if (route.parts[0] === "container" && route.parts[1]) renderContainer(snapshot, route.parts[1]);
+  else if (route.parts[0] === "process" && route.parts[1]) renderProcess(snapshot, route.parts[1]);
+  else renderNotFound("Page", route.parts.join("/"));
   bindNavigation();
 }
 
-async function poll() {
+async function pollLive() {
+  if (currentRoute().mode !== "live") return;
   try {
     const response = await fetch("/api/snapshot", { cache: "no-store" });
     const body = await response.json();
@@ -611,49 +724,65 @@ async function poll() {
     state.snapshot = body;
     state.error = null;
     const timestamp = body.node.timestamp_unix_ms;
-    connectionStatus.className = "status-pill healthy";
-    connectionStatus.textContent = "Live telemetry";
+    const ageSeconds = Math.max(0, Date.now() - timestamp) / 1000;
+    const stale = ageSeconds > 10;
+    connectionStatus.className = `status-pill ${stale ? "warning" : "healthy"}`;
+    connectionStatus.textContent = stale ? "Live data stale" : "Live telemetry";
     lastUpdated.textContent = `Updated ${new Date(timestamp).toLocaleTimeString()}`;
-    alertBox.hidden = true;
+    alertBox.textContent = stale ? `The last persisted snapshot is ${Math.round(ageSeconds)} seconds old. The collector may be queueing data.` : "";
+    alertBox.hidden = !stale;
     render();
   } catch (error) {
     state.error = error.message;
     connectionStatus.className = "status-pill warning";
-    connectionStatus.textContent = "Waiting for collector";
+    connectionStatus.textContent = state.snapshot ? "Live data stale" : "Waiting for collector";
     alertBox.textContent = error.message;
     alertBox.hidden = false;
   }
 }
 
-async function pollRollups() {
+async function pollHistory() {
+  const route = currentRoute();
+  if (route.mode !== "history") return;
+  const minutes = route.minutes;
+  state.historicalMinutes = minutes;
   try {
-    const response = await fetch("/api/rollups/overview?minutes=60", { cache: "no-store" });
+    const response = await fetch(`/api/rollups/overview?minutes=${minutes}`, { cache: "no-store" });
     const body = await response.json();
     if (!response.ok) throw new Error(body.detail || `Rollup request failed (${response.status})`);
     state.overviewRollups = body;
     state.historyError = null;
-    await pollCurrentDeploymentRollups();
+    if (route.parts[0] === "deployment" && route.parts.length >= 3) {
+      const namespace = route.parts[1];
+      const deployment = route.parts[2];
+      const detailResponse = await fetch(`/api/rollups/deployments/${encodeURIComponent(namespace)}/${encodeURIComponent(deployment)}?minutes=${minutes}`, { cache: "no-store" });
+      const detail = await detailResponse.json();
+      if (!detailResponse.ok) throw new Error(detail.detail || `Deployment history failed (${detailResponse.status})`);
+      state.deploymentRollups[`${minutes}:${namespace}/${deployment}`] = detail;
+    }
+    connectionStatus.className = "status-pill healthy";
+    connectionStatus.textContent = "Historical telemetry";
+    lastUpdated.textContent = `Range: last ${historyLabel(minutes)}`;
+    alertBox.hidden = true;
     render();
   } catch (error) {
     state.historyError = error.message;
+    connectionStatus.className = "status-pill warning";
+    connectionStatus.textContent = "History unavailable";
+    alertBox.textContent = error.message;
+    alertBox.hidden = false;
     render();
   }
 }
 
-async function pollCurrentDeploymentRollups() {
-  const parts = window.location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
-  if (parts[0] !== "deployment" || parts.length < 3) return;
-  const namespace = parts[1];
-  const deployment = parts[2];
-  const response = await fetch(`/api/rollups/deployments/${encodeURIComponent(namespace)}/${encodeURIComponent(deployment)}?minutes=60`, { cache: "no-store" });
-  const body = await response.json();
-  if (!response.ok) throw new Error(body.detail || `Deployment rollup request failed (${response.status})`);
-  state.deploymentRollups[`${namespace}/${deployment}`] = body;
+async function pollSelectedMode() {
+  if (currentRoute().mode === "history") await pollHistory();
+  else await pollLive();
 }
 
-window.addEventListener("hashchange", () => { render(); pollCurrentDeploymentRollups().then(render).catch(() => {}); });
+window.addEventListener("hashchange", () => { render(); pollSelectedMode(); });
 window.addEventListener("resize", () => requestAnimationFrame(() => { drawResourceChart(); drawDeploymentCharts(); }));
-poll();
-pollRollups();
-setInterval(poll, 1000);
-setInterval(pollRollups, 15000);
+render();
+pollSelectedMode();
+setInterval(() => { if (currentRoute().mode === "live") pollLive(); }, 1000);
+setInterval(() => { if (currentRoute().mode === "history") pollHistory(); }, 15000);

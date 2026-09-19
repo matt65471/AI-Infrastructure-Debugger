@@ -2,6 +2,9 @@ import sys
 import tempfile
 import unittest
 import gzip
+import copy
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +17,7 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from server import create_app, load_snapshot  # noqa: E402
+from server import MAX_INFRA_PAYLOAD_BYTES, create_app, load_snapshot  # noqa: E402
 
 
 class FakeDatabase:
@@ -45,7 +48,9 @@ class FakeDatabase:
             "start": "2026-09-08T00:00:00+00:00",
             "end": "2026-09-08T01:00:00+00:00",
             "node": [],
+            "node_summary": {},
             "deployments": [],
+            "events": [],
         }
 
     def query_deployment(
@@ -57,6 +62,7 @@ class FakeDatabase:
             "namespace": namespace,
             "deployment_name": deployment,
             "window_minutes": minutes,
+            "summary": {},
             "series": [],
             "routes": [],
         }
@@ -74,15 +80,28 @@ class SnapshotLoadingTest(unittest.TestCase):
             load_snapshot(Path("/tmp/does-not-exist-telemetry-snapshot.json"))
         self.assertEqual(context.exception.status_code, 503)
 
+    def test_dashboard_assets_define_live_and_historical_modes(self) -> None:
+        static_root = Path(__file__).resolve().parents[1] / "static"
+        index = (static_root / "index.html").read_text(encoding="utf-8")
+        javascript = (static_root / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="live-mode"', index)
+        self.assertIn('id="history-mode"', index)
+        self.assertIn("#/history/60", index)
+        self.assertIn("new Set([60, 360, 1440])", javascript)
+        self.assertIn("if (currentRoute().mode !== \"live\") return", javascript)
+
 
 class DashboardApiTest(unittest.TestCase):
     def setUp(self) -> None:
         self.database = FakeDatabase()
         self.sample_path = Path(__file__).resolve().parents[1] / "sample_snapshot.json"
+        self.sample = load_snapshot(self.sample_path)
+        self.sample["node"]["timestamp_unix_ms"] = int(datetime.now(UTC).timestamp() * 1000)
         self.client_context = TestClient(
             create_app(
-                snapshot_path=self.sample_path,
                 database_override=self.database,
+                ingestion_token="test-token",
+                initial_snapshot=self.sample,
             )
         )
         self.client = self.client_context.__enter__()
@@ -94,6 +113,70 @@ class DashboardApiTest(unittest.TestCase):
         response = self.client.get("/api/snapshot")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["node"]["hostname"], "ubuntu-vm")
+
+    def test_live_endpoint_waits_for_first_persisted_ingestion(self) -> None:
+        with TestClient(create_app(database_override=FakeDatabase(), ingestion_token="token")) as client:
+            self.assertEqual(client.get("/api/snapshot").status_code, 503)
+            health = client.get("/api/health").json()
+            self.assertTrue(health["live_stale"])
+            self.assertIsNone(health["latest_snapshot_timestamp_unix_ms"])
+
+    def envelope(self, *snapshots: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "collector_id": "test-machine",
+            "snapshots": list(snapshots or (self.sample,)),
+        }
+
+    def post_snapshots(self, payload: dict[str, Any], token: str = "test-token"):
+        return self.client.post(
+            "/v1/infra-snapshots",
+            content=json.dumps(payload),
+            headers={"authorization": f"Bearer {token}", "content-type": "application/json"},
+        )
+
+    def test_infrastructure_ingestion_requires_auth_and_updates_live_after_database(self) -> None:
+        self.assertEqual(self.client.post("/v1/infra-snapshots", json=self.envelope()).status_code, 401)
+        self.assertEqual(self.post_snapshots(self.envelope(), "wrong").status_code, 401)
+        unsupported = self.client.post(
+            "/v1/infra-snapshots",
+            content=b"{}",
+            headers={"authorization": "Bearer test-token", "content-type": "text/plain"},
+        )
+        self.assertEqual(unsupported.status_code, 415)
+        newer = copy.deepcopy(self.sample)
+        newer["node"]["timestamp_unix_ms"] += 1000
+        response = self.post_snapshots(self.envelope(newer))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["accepted"], 1)
+        self.assertEqual(self.database.snapshots[-1], newer)
+        self.assertEqual(self.client.get("/api/snapshot").json()["node"]["timestamp_unix_ms"], newer["node"]["timestamp_unix_ms"])
+
+    def test_infrastructure_ingestion_validates_shape_count_and_time(self) -> None:
+        self.assertEqual(self.post_snapshots({}).status_code, 422)
+        self.assertEqual(self.post_snapshots(self.envelope(*([self.sample] * 11))).status_code, 422)
+        old = copy.deepcopy(self.sample)
+        old["node"]["timestamp_unix_ms"] = int((datetime.now(UTC) - timedelta(days=8)).timestamp() * 1000)
+        future = copy.deepcopy(self.sample)
+        future["node"]["timestamp_unix_ms"] = int((datetime.now(UTC) + timedelta(minutes=6)).timestamp() * 1000)
+        self.assertEqual(self.post_snapshots(self.envelope(old)).status_code, 422)
+        self.assertEqual(self.post_snapshots(self.envelope(future)).status_code, 422)
+
+    def test_infrastructure_ingestion_rejects_oversized_payload(self) -> None:
+        response = self.client.post(
+            "/v1/infra-snapshots",
+            content=b"x" * (MAX_INFRA_PAYLOAD_BYTES + 1),
+            headers={"authorization": "Bearer test-token", "content-type": "application/json"},
+        )
+        self.assertEqual(response.status_code, 413)
+
+    def test_older_replay_does_not_replace_newer_live_snapshot(self) -> None:
+        newer = copy.deepcopy(self.sample)
+        newer["node"]["timestamp_unix_ms"] += 5000
+        self.assertEqual(self.post_snapshots(self.envelope(newer)).status_code, 200)
+        self.assertEqual(self.post_snapshots(self.envelope(self.sample)).status_code, 200)
+        current = self.client.get("/api/snapshot").json()
+        self.assertEqual(current["node"]["timestamp_unix_ms"], newer["node"]["timestamp_unix_ms"])
 
     def test_overview_validates_window_and_returns_database_result(self) -> None:
         self.assertEqual(
@@ -156,11 +239,12 @@ class DashboardApiTest(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 415)
 
-    def test_database_outage_only_disables_historical_endpoints(self) -> None:
+    def test_database_outage_freezes_live_and_disables_ingestion_and_history(self) -> None:
         self.database.ready = False
         self.assertEqual(self.client.get("/api/snapshot").status_code, 200)
         self.assertEqual(self.client.get("/api/rollups/overview").status_code, 503)
         self.assertEqual(self.client.post("/v1/traces", content=b"").status_code, 503)
+        self.assertEqual(self.post_snapshots(self.envelope()).status_code, 503)
 
     def test_invalid_snapshot_shape_returns_service_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

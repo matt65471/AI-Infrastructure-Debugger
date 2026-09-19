@@ -1,12 +1,16 @@
 #include "telemetry_collector.h"
 #include "json_formatter.h"
+#include "infrastructure_exporter.h"
 
+#include <atomic>
 #include <chrono>
+#include <csignal>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -17,8 +21,15 @@ namespace {
 
 struct OutputOptions {
     bool json_stdout = false;
-    std::filesystem::path json_file;
+    bool exporter_option_seen = false;
+    InfrastructureExporterOptions exporter;
 };
+
+std::atomic<bool> stop_requested{false};
+
+void request_stop(int) {
+    stop_requested.store(true);
+}
 
 OutputOptions parse_options(int argc, char* argv[]) {
     OutputOptions options;
@@ -26,36 +37,38 @@ OutputOptions parse_options(int argc, char* argv[]) {
         const std::string argument = argv[index];
         if (argument == "--json") {
             options.json_stdout = true;
-        } else if (argument == "--json-file" && index + 1 < argc) {
-            options.json_file = argv[++index];
+        } else if (argument == "--ingest-url" && index + 1 < argc) {
+            options.exporter_option_seen = true;
+            options.exporter.ingest_url = argv[++index];
+        } else if (argument == "--token-file" && index + 1 < argc) {
+            options.exporter_option_seen = true;
+            options.exporter.token_file = argv[++index];
+        } else if (argument == "--spool-dir" && index + 1 < argc) {
+            options.exporter_option_seen = true;
+            options.exporter.spool_directory = argv[++index];
+        } else if (argument == "--spool-max-bytes" && index + 1 < argc) {
+            options.exporter_option_seen = true;
+            options.exporter.spool_max_bytes = std::stoull(argv[++index]);
         } else {
             throw std::runtime_error(
-                "usage: telemetry_agent [--json | --json-file PATH]");
+                "usage: telemetry_agent [--json | --ingest-url URL "
+                "--token-file PATH --spool-dir PATH "
+                "[--spool-max-bytes BYTES]]");
         }
     }
-    if (options.json_stdout && !options.json_file.empty()) {
+    const bool uses_exporter = options.exporter_option_seen;
+    if (options.json_stdout && uses_exporter) {
         throw std::runtime_error(
-            "--json and --json-file cannot be used together");
+            "--json and HTTP ingestion options cannot be used together");
+    }
+    if (uses_exporter && (options.exporter.ingest_url.empty() ||
+                         options.exporter.token_file.empty() ||
+                         options.exporter.spool_directory.empty() ||
+                         options.exporter.spool_max_bytes == 0)) {
+        throw std::runtime_error(
+            "--ingest-url, --token-file, and --spool-dir must be used together");
     }
     return options;
-}
-
-void write_snapshot_file(const std::filesystem::path& path,
-                         const std::string& json) {
-    const std::filesystem::path temporary_path = path.string() + ".tmp";
-    {
-        std::ofstream file(temporary_path, std::ios::trunc);
-        if (!file.is_open()) {
-            throw std::runtime_error("failed to open snapshot file: " +
-                                     temporary_path.string());
-        }
-        file << json << '\n';
-        if (!file) {
-            throw std::runtime_error("failed to write snapshot file: " +
-                                     temporary_path.string());
-        }
-    }
-    std::filesystem::rename(temporary_path, path);
 }
 
 std::string format_process_list(const std::vector<ProcessMetric>& processes,
@@ -478,19 +491,35 @@ std::string format_kubernetes_event_list(
 int main(int argc, char* argv[]) {
     try {
         const OutputOptions options = parse_options(argc, argv);
+        std::signal(SIGINT, request_stop);
+        std::signal(SIGTERM, request_stop);
         TelemetryCollector telemetry_collector;
+        std::unique_ptr<InfrastructureExporter> exporter;
+        std::thread exporter_thread;
+        if (!options.exporter.ingest_url.empty()) {
+            exporter = std::make_unique<InfrastructureExporter>(options.exporter);
+            exporter_thread = std::thread([&exporter]() {
+                exporter->run(stop_requested);
+            });
+        }
 
-        while (true) {
+        try {
+            while (!stop_requested.load()) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
+            if (stop_requested.load()) {
+                break;
+            }
 
             const TelemetrySnapshot snapshot = telemetry_collector.collect();
             if (options.json_stdout) {
                 std::cout << format_snapshot_as_json(snapshot) << '\n';
                 continue;
             }
-            if (!options.json_file.empty()) {
-                write_snapshot_file(options.json_file,
-                                    format_snapshot_as_json(snapshot));
+            if (exporter) {
+                exporter->enqueue(
+                    format_snapshot_as_json(snapshot),
+                    snapshot.node.timestamp_unix_ms
+                );
                 continue;
             }
             const NodeMetric& node = snapshot.node;
@@ -575,6 +604,16 @@ int main(int argc, char* argv[]) {
                       << format_kubernetes_event_list(
                              snapshot.kubernetes_events)
                       << '\n';
+            }
+        } catch (...) {
+            stop_requested.store(true);
+            if (exporter_thread.joinable()) {
+                exporter_thread.join();
+            }
+            throw;
+        }
+        if (exporter_thread.joinable()) {
+            exporter_thread.join();
         }
     } catch (const std::exception& error) {
         std::cerr << "telemetry_agent error: " << error.what() << '\n';

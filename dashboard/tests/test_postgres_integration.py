@@ -234,9 +234,19 @@ class PostgreSQLIntegrationTest(unittest.TestCase):
         )
         self.assertEqual(len(overview["node"]), 60)
         self.assertEqual(len(overview["deployments"][0]["series"]), 60)
+        overview_deployment = next(
+            item for item in overview["deployments"]
+            if item["deployment_name"] == service
+        )
+        self.assertEqual(overview_deployment["summary"]["request_count"], 3)
+        self.assertAlmostEqual(overview_deployment["summary"]["p95_latency_ms"], 290.0)
+        self.assertTrue(any(event["reason"] == "IntegrationTest" for event in overview["events"]))
         self.assertIsNotNone(deployment)
         self.assertEqual(len(deployment["series"]), 60)
+        self.assertEqual(deployment["summary"]["request_count"], 3)
+        self.assertAlmostEqual(deployment["summary"]["p95_latency_ms"], 290.0)
         self.assertEqual(deployment["routes"][0]["http_route"], "/pay")
+        self.assertEqual(deployment["routes"][0]["request_count"], 3)
 
         late_span = scope_spans.spans.add()
         late_span.trace_id = uuid.uuid4().bytes

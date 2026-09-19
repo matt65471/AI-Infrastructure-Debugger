@@ -3,11 +3,14 @@ cmake_minimum_required(VERSION 3.16)
 project(telemetry_agent LANGUAGES CXX)
 
 include(CTest)
+find_package(CURL REQUIRED)
+find_package(Threads REQUIRED)
 
 add_executable(telemetry_agent
     src/container_metric_calculator.cpp
     src/deployment_metric_aggregator.cpp
     src/json_formatter.cpp
+    src/infrastructure_exporter.cpp
     src/kubernetes_metadata_collector.cpp
     src/pod_metric_aggregator.cpp
     src/linux/cgroup_collector.cpp
@@ -25,6 +28,7 @@ add_executable(telemetry_agent
 target_include_directories(telemetry_agent PRIVATE include)
 
 target_compile_features(telemetry_agent PRIVATE cxx_std_17)
+target_link_libraries(telemetry_agent PRIVATE CURL::libcurl Threads::Threads)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(telemetry_agent PRIVATE -Wall -Wextra -Wpedantic)
@@ -63,6 +67,26 @@ if(BUILD_TESTING)
         target_compile_options(json_formatter_test PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME json_formatter_test COMMAND json_formatter_test)
+
+    add_executable(infrastructure_exporter_test
+        tests/infrastructure_exporter_test.cpp
+        src/infrastructure_exporter.cpp
+    )
+    target_include_directories(infrastructure_exporter_test PRIVATE include)
+    target_compile_features(infrastructure_exporter_test PRIVATE cxx_std_17)
+    target_link_libraries(infrastructure_exporter_test PRIVATE CURL::libcurl Threads::Threads)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(infrastructure_exporter_test PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME infrastructure_exporter_test COMMAND infrastructure_exporter_test)
+    add_test(
+        NAME telemetry_agent_rejects_partial_http_config
+        COMMAND telemetry_agent --ingest-url http://127.0.0.1:30081/v1/infra-snapshots
+    )
+    set_tests_properties(
+        telemetry_agent_rejects_partial_http_config
+        PROPERTIES WILL_FAIL TRUE
+    )
 
     add_executable(container_metric_calculator_test
         tests/container_metric_calculator_test.cpp

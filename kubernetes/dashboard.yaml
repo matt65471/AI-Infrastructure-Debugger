@@ -24,8 +24,11 @@ spec:
                 secretKeyRef:
                   name: telemetry-postgres
                   key: database-url
-            - name: TELEMETRY_SNAPSHOT_FILE
-              value: /var/lib/ai-infrastructure-debugger/snapshot.json
+            - name: TELEMETRY_INGEST_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: telemetry-ingestion
+                  key: token
           ports:
             - name: http
               containerPort: 8080
@@ -55,16 +58,9 @@ spec:
             readOnlyRootFilesystem: true
             runAsNonRoot: true
           volumeMounts:
-            - name: snapshots
-              mountPath: /var/lib/ai-infrastructure-debugger
-              readOnly: true
             - name: temporary
               mountPath: /tmp
       volumes:
-        - name: snapshots
-          hostPath:
-            path: /var/lib/ai-infrastructure-debugger
-            type: DirectoryOrCreate
         - name: temporary
           emptyDir: {}
 ---

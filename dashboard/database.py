@@ -625,6 +625,46 @@ class TelemetryDatabase:
                 """,
                 (start, end),
             ).fetchall()
+            node_summary_row = connection.execute(
+                """
+                SELECT avg(sample.cpu_usage_percent) AS average_cpu_percent,
+                       max(sample.cpu_usage_percent) AS maximum_cpu_percent,
+                       avg(sample.memory_usage_percent) AS average_memory_percent,
+                       max(sample.memory_usage_percent) AS maximum_memory_percent
+                FROM telemetry.infra_samples sample
+                JOIN telemetry.resources resource ON resource.id = sample.resource_id
+                WHERE resource.kind = 1 AND sample.sampled_at >= %s AND sample.sampled_at < %s
+                """,
+                (start, end),
+            ).fetchone()
+            application_summary_rows = connection.execute(
+                """
+                SELECT COALESCE(resource.namespace_name, 'unknown') AS namespace_name,
+                       COALESCE(resource.deployment_name, resource.service_name, 'unknown') AS deployment_name,
+                       COALESCE(resource.service_name, resource.deployment_name, 'unknown') AS service_name,
+                       count(*) AS request_count,
+                       count(*) FILTER (WHERE span.status_code = 2 OR span.http_status_code >= 500) AS error_count,
+                       avg(span.duration_us) / 1000.0 AS average_latency_ms,
+                       percentile_cont(0.95) WITHIN GROUP (ORDER BY span.duration_us) / 1000.0 AS p95_latency_ms,
+                       max(span.duration_us) / 1000.0 AS maximum_latency_ms
+                FROM telemetry.spans span
+                JOIN telemetry.resources resource ON resource.id = span.resource_id
+                WHERE span.started_at >= %s AND span.started_at < %s AND span.span_kind = 2
+                GROUP BY 1, 2, 3
+                """,
+                (start, end),
+            ).fetchall()
+            event_rows = connection.execute(
+                """
+                SELECT first_seen_at, last_seen_at, severity, reason, message,
+                       occurrence_count, details
+                FROM telemetry.events
+                WHERE last_seen_at >= %s AND first_seen_at < %s
+                ORDER BY last_seen_at DESC
+                LIMIT 100
+                """,
+                (start, end),
+            ).fetchall()
 
         node_by_bucket = {row["bucket"]: row for row in node_rows}
         node_series = [
@@ -639,6 +679,10 @@ class TelemetryDatabase:
         for row in rollup_rows:
             key = (row["namespace_name"], row["deployment_name"], row["service_name"])
             grouped.setdefault(key, []).append(dict(row))
+        application_summaries = {
+            (row["namespace_name"], row["deployment_name"], row["service_name"]): row
+            for row in application_summary_rows
+        }
         deployments = []
         for (namespace, deployment, service), rows in grouped.items():
             by_bucket = {row["bucket"]: row for row in rows}
@@ -650,6 +694,10 @@ class TelemetryDatabase:
                     "deployment_name": deployment,
                     "service_name": service,
                     "latest": populated[-1] if populated else None,
+                    "summary": _range_summary_json(
+                        application_summaries.get((namespace, deployment, service)),
+                        rows,
+                    ),
                     "series": series,
                 }
             )
@@ -658,7 +706,15 @@ class TelemetryDatabase:
             "start": start.isoformat(),
             "end": end.isoformat(),
             "node": node_series,
+            "node_summary": {
+                key: _float(node_summary_row, key)
+                for key in (
+                    "average_cpu_percent", "maximum_cpu_percent",
+                    "average_memory_percent", "maximum_memory_percent",
+                )
+            },
             "deployments": deployments,
+            "events": [_event_json(row) for row in event_rows],
         }
 
     def query_deployment(
@@ -688,21 +744,53 @@ class TelemetryDatabase:
                 """,
                 (namespace, deployment, start, end),
             ).fetchall()
+            span_summary = connection.execute(
+                """
+                SELECT count(*) AS request_count,
+                       count(*) FILTER (WHERE span.status_code = 2 OR span.http_status_code >= 500) AS error_count,
+                       avg(span.duration_us) / 1000.0 AS average_latency_ms,
+                       percentile_cont(0.50) WITHIN GROUP (ORDER BY span.duration_us) / 1000.0 AS p50_latency_ms,
+                       percentile_cont(0.95) WITHIN GROUP (ORDER BY span.duration_us) / 1000.0 AS p95_latency_ms,
+                       percentile_cont(0.99) WITHIN GROUP (ORDER BY span.duration_us) / 1000.0 AS p99_latency_ms,
+                       max(span.duration_us) / 1000.0 AS maximum_latency_ms
+                FROM telemetry.spans span
+                JOIN telemetry.resources resource ON resource.id = span.resource_id
+                WHERE resource.namespace_name = %s AND resource.deployment_name = %s
+                  AND span.started_at >= %s AND span.started_at < %s AND span.span_kind = 2
+                """,
+                (namespace, deployment, start, end),
+            ).fetchone()
+            route_rows = connection.execute(
+                """
+                SELECT span.http_route,
+                       count(*) AS request_count,
+                       count(*) FILTER (WHERE span.status_code = 2 OR span.http_status_code >= 500) AS error_count,
+                       avg(span.duration_us) / 1000.0 AS average_latency_ms,
+                       percentile_cont(0.50) WITHIN GROUP (ORDER BY span.duration_us) / 1000.0 AS p50_latency_ms,
+                       percentile_cont(0.95) WITHIN GROUP (ORDER BY span.duration_us) / 1000.0 AS p95_latency_ms,
+                       percentile_cont(0.99) WITHIN GROUP (ORDER BY span.duration_us) / 1000.0 AS p99_latency_ms,
+                       max(span.duration_us) / 1000.0 AS maximum_latency_ms
+                FROM telemetry.spans span
+                JOIN telemetry.resources resource ON resource.id = span.resource_id
+                WHERE resource.namespace_name = %s AND resource.deployment_name = %s
+                  AND span.started_at >= %s AND span.started_at < %s AND span.span_kind = 2
+                  AND COALESCE(span.http_route, '') <> ''
+                GROUP BY span.http_route ORDER BY request_count DESC, span.http_route
+                """,
+                (namespace, deployment, start, end),
+            ).fetchall()
 
         aggregate = [row for row in rows if row["http_route"] == ""]
         by_bucket = {row["bucket"]: row for row in aggregate}
-        latest_bucket = max((row["bucket"] for row in rows), default=None)
-        routes = [
-            _rollup_json(row["bucket"], row) | {"http_route": row["http_route"]}
-            for row in rows
-            if row["http_route"] and row["bucket"] == latest_bucket
-        ]
         return {
             "namespace": namespace,
             "deployment_name": deployment,
             "window_minutes": minutes,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "summary": _range_summary_json(span_summary, aggregate),
             "series": [_rollup_json(bucket, by_bucket.get(bucket)) for bucket in buckets],
-            "routes": routes,
+            "routes": [_span_summary_json(row) | {"http_route": row["http_route"]} for row in route_rows],
         }
 
 
@@ -730,4 +818,47 @@ def _rollup_json(bucket: datetime, row: dict[str, Any] | None) -> dict[str, Any]
         )
     else:
         result["error_rate_percent"] = None
+    return result
+
+
+def _span_summary_json(row: dict[str, Any] | None) -> dict[str, Any]:
+    fields = (
+        "request_count", "error_count", "average_latency_ms", "p50_latency_ms",
+        "p95_latency_ms", "p99_latency_ms", "maximum_latency_ms",
+    )
+    result: dict[str, Any] = {}
+    for field in fields:
+        value = row.get(field) if row else None
+        result[field] = float(value) if isinstance(value, (Decimal, float)) else value
+    request_count = int(result.get("request_count") or 0)
+    result["error_rate_percent"] = (
+        int(result.get("error_count") or 0) / request_count * 100
+        if request_count
+        else None
+    )
+    return result
+
+
+def _range_summary_json(
+    span_row: dict[str, Any] | None,
+    rollup_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    result = _span_summary_json(span_row)
+    cpu_averages = [float(row["average_cpu_percent"]) for row in rollup_rows if row.get("average_cpu_percent") is not None]
+    cpu_maxima = [float(row["maximum_cpu_percent"]) for row in rollup_rows if row.get("maximum_cpu_percent") is not None]
+    memory_averages = [int(row["average_memory_bytes"]) for row in rollup_rows if row.get("average_memory_bytes") is not None]
+    memory_maxima = [int(row["maximum_memory_bytes"]) for row in rollup_rows if row.get("maximum_memory_bytes") is not None]
+    result.update({
+        "average_cpu_percent": sum(cpu_averages) / len(cpu_averages) if cpu_averages else None,
+        "maximum_cpu_percent": max(cpu_maxima) if cpu_maxima else None,
+        "average_memory_bytes": round(sum(memory_averages) / len(memory_averages)) if memory_averages else None,
+        "maximum_memory_bytes": max(memory_maxima) if memory_maxima else None,
+    })
+    return result
+
+
+def _event_json(row: dict[str, Any]) -> dict[str, Any]:
+    result = dict(row)
+    result["first_seen_at"] = row["first_seen_at"].isoformat()
+    result["last_seen_at"] = row["last_seen_at"].isoformat()
     return result

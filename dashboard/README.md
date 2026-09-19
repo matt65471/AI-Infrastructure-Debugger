@@ -1,8 +1,8 @@
 # Infrastructure Dashboard and Telemetry Store
 
-The dashboard shows the latest combined telemetry snapshot plus PostgreSQL-backed
-one-minute history. It does not call Linux or Kubernetes itself. Navigation
-follows the resource hierarchy:
+The dashboard receives authenticated host snapshots over HTTP, persists them to
+PostgreSQL, and exposes separate Live and Historical modes. It does not call
+Linux or Kubernetes itself. Live navigation follows the resource hierarchy:
 
 ```text
 Node -> Deployment -> Pod -> Container -> Linux process
@@ -23,13 +23,7 @@ dashboard, OpenTelemetry Collector, and the demo application:
 ```bash
 bash scripts/build-and-import-images.sh
 bash scripts/deploy-demo.sh
-```
-
-Start the host collector:
-
-```bash
-sudo ./agent/build/telemetry_agent \
-  --json-file /var/lib/ai-infrastructure-debugger/snapshot.json
+bash scripts/install-host-collector.sh
 ```
 
 Open `http://<vm-ip-address>:30081` on the Mac. PostgreSQL is not exposed
@@ -62,17 +56,16 @@ The deployment script creates the database Secret only when it is absent, so
 rerunning the script does not rotate credentials away from an existing retained
 database.
 
-## Preview without the collector
+## Preview with a fixture
 
 The representative sample is only for developing the interface:
 
 ```bash
 source .venv/bin/activate
 python3 dashboard/server.py \
-  --snapshot-file dashboard/sample_snapshot.json \
+  --initial-snapshot dashboard/sample_snapshot.json \
   --database-url ""
 ```
 
-The header says `Live telemetry` because the dashboard is successfully polling
-the selected file; the sample timestamp and `sample_snapshot.json` path make it
-clear that this is not current VM data.
+This fixture option is for local UI work only. The deployed dashboard has no
+snapshot hostPath and receives live snapshots through `/v1/infra-snapshots`.

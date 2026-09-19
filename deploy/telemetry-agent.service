@@ -1,0 +1,20 @@
+[Unit]
+Description=AI Infrastructure Debugger host telemetry collector
+After=network-online.target k3s.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/telemetry_agent --ingest-url http://127.0.0.1:30081/v1/infra-snapshots --token-file /etc/ai-infrastructure-debugger/ingest-token --spool-dir /var/lib/ai-infrastructure-debugger/spool --spool-max-bytes 268435456
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/ai-infrastructure-debugger
+
+[Install]
+WantedBy=multi-user.target
