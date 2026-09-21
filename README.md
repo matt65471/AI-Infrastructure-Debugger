@@ -449,6 +449,42 @@ Network fault    -> TCP retransmit/reset/timeout deltas + application behavior
 Network counters are currently node-wide. Reliable pod/service network
 attribution remains a later eBPF or connection-tracing phase.
 
+## First Controlled Fault Experiment
+
+The first automated scenario saturates CPU inside one demo application
+container. It is restricted to the `infrastructure-demo` namespace, requires
+an explicit confirmation argument, and the injected Python process enforces
+its own deadline. The runner generates order traffic during a healthy
+baseline, the injection, and recovery. It records all phase timestamps and the
+traffic summary in `telemetry.fault_experiments`.
+
+Rebuild and deploy the dashboard image so migration
+`002_fault_experiments.sql` and the experiment API are available, then run on
+the k3s VM from the repository root:
+
+```bash
+bash scripts/build-and-import-images.sh
+bash scripts/deploy-demo.sh
+python3 -m fault_injection.runner cpu-saturation \
+  --target payment \
+  --baseline 30 \
+  --duration 30 \
+  --recovery 60 \
+  --confirm infrastructure-demo
+```
+
+The runner refuses to begin unless the target Deployment has exactly one ready
+pod, the dashboard database is ready, and the ingestion Secret is available.
+An experiment is marked `completed` only when the Deployment remains ready and
+application traffic produces at least three consecutive successful requests
+during recovery. Inspect the resulting labels with:
+
+```bash
+sudo k3s kubectl exec -n infrastructure-demo postgres-0 -- \
+  sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
+  "SELECT id, fault_type, target_name, status, baseline_started_at, injected_at, fault_ended_at, recovery_completed_at FROM telemetry.fault_experiments ORDER BY created_at DESC;"'
+```
+
 ## Test Workloads
 
 Run the telemetry agent in one terminal, then run a workload in another.

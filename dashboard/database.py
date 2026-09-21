@@ -168,6 +168,108 @@ class TelemetryDatabase:
                     )
             self._known_partitions.add(cache_key)
 
+    def create_fault_experiment(
+        self,
+        *,
+        experiment_id: uuid.UUID,
+        fault_type: str,
+        namespace_name: str,
+        target_kind: str,
+        target_name: str,
+        parameters: dict[str, Any],
+        baseline_started_at: datetime,
+        expires_at: datetime,
+    ) -> dict[str, Any]:
+        """Create an idempotent experiment record before a fault is applied."""
+        with self.pool.connection() as connection:
+            row = connection.execute(
+                """
+                INSERT INTO telemetry.fault_experiments (
+                    id, fault_type, namespace_name, target_kind, target_name,
+                    parameters, status, baseline_started_at, expires_at
+                ) VALUES (
+                    %(id)s, %(fault_type)s, %(namespace_name)s,
+                    %(target_kind)s, %(target_name)s, %(parameters)s,
+                    'baseline', %(baseline_started_at)s, %(expires_at)s
+                )
+                ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id
+                RETURNING *
+                """,
+                {
+                    "id": experiment_id,
+                    "fault_type": fault_type,
+                    "namespace_name": namespace_name,
+                    "target_kind": target_kind,
+                    "target_name": target_name,
+                    "parameters": Jsonb(parameters),
+                    "baseline_started_at": baseline_started_at,
+                    "expires_at": expires_at,
+                },
+            ).fetchone()
+        return _fault_experiment_json(row)
+
+    def update_fault_experiment(
+        self,
+        experiment_id: uuid.UUID,
+        *,
+        status: str,
+        observed_at: datetime,
+        error_message: str | None = None,
+        traffic_summary: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Advance an experiment and stamp the corresponding lifecycle time."""
+        timestamp_column = {
+            "injecting": "injected_at",
+            "recovering": "fault_ended_at",
+            "completed": "recovery_completed_at",
+            "recovery_failed": "recovery_completed_at",
+            "failed": "failed_at",
+        }.get(status)
+        if timestamp_column is None:
+            raise ValueError(f"unsupported experiment status: {status}")
+        allowed_previous = {
+            "injecting": ["baseline"],
+            "recovering": ["injecting"],
+            "completed": ["recovering"],
+            "recovery_failed": ["recovering"],
+            "failed": ["baseline", "injecting", "recovering"],
+        }[status]
+        with self.pool.connection() as connection:
+            row = connection.execute(
+                sql.SQL(
+                    """
+                    UPDATE telemetry.fault_experiments
+                    SET status = %(status)s,
+                        {} = COALESCE({}, %(observed_at)s),
+                        error_message = %(error_message)s,
+                        traffic_summary = COALESCE(
+                            %(traffic_summary)s, traffic_summary
+                        ),
+                        updated_at = now()
+                    WHERE id = %(id)s
+                      AND (
+                          status = %(status)s
+                          OR status = ANY(%(allowed_previous)s)
+                      )
+                    RETURNING *
+                    """
+                ).format(
+                    sql.Identifier(timestamp_column),
+                    sql.Identifier(timestamp_column),
+                ),
+                {
+                    "id": experiment_id,
+                    "status": status,
+                    "observed_at": observed_at,
+                    "allowed_previous": allowed_previous,
+                    "error_message": error_message,
+                    "traffic_summary": (
+                        Jsonb(traffic_summary) if traffic_summary is not None else None
+                    ),
+                },
+            ).fetchone()
+        return _fault_experiment_json(row) if row else None
+
     def _upsert_resource(
         self,
         connection: Any,
@@ -861,4 +963,22 @@ def _event_json(row: dict[str, Any]) -> dict[str, Any]:
     result = dict(row)
     result["first_seen_at"] = row["first_seen_at"].isoformat()
     result["last_seen_at"] = row["last_seen_at"].isoformat()
+    return result
+
+
+def _fault_experiment_json(row: dict[str, Any]) -> dict[str, Any]:
+    result = dict(row)
+    result["id"] = str(row["id"])
+    for field in (
+        "created_at",
+        "baseline_started_at",
+        "injected_at",
+        "fault_ended_at",
+        "recovery_completed_at",
+        "failed_at",
+        "expires_at",
+        "updated_at",
+    ):
+        if result.get(field) is not None:
+            result[field] = result[field].isoformat()
     return result

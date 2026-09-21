@@ -272,6 +272,49 @@ class PostgreSQLIntegrationTest(unittest.TestCase):
             ).fetchone()["request_count"]
         self.assertEqual(updated_count, 4)
 
+    def test_fault_experiment_lifecycle_and_transition_guards(self) -> None:
+        experiment_id = uuid.uuid4()
+        started_at = datetime.now(UTC)
+        created = self.database.create_fault_experiment(
+            experiment_id=experiment_id,
+            fault_type="cpu_saturation",
+            namespace_name="infrastructure-demo",
+            target_kind="deployment",
+            target_name="payment",
+            parameters={"duration_seconds": 30},
+            baseline_started_at=started_at,
+            expires_at=started_at + timedelta(minutes=3),
+        )
+        self.assertEqual(created["status"], "baseline")
+        self.assertEqual(created["id"], str(experiment_id))
+        self.assertIsNone(
+            self.database.update_fault_experiment(
+                experiment_id,
+                status="completed",
+                observed_at=started_at + timedelta(seconds=1),
+            )
+        )
+        injecting = self.database.update_fault_experiment(
+            experiment_id,
+            status="injecting",
+            observed_at=started_at + timedelta(seconds=30),
+        )
+        recovering = self.database.update_fault_experiment(
+            experiment_id,
+            status="recovering",
+            observed_at=started_at + timedelta(seconds=60),
+        )
+        completed = self.database.update_fault_experiment(
+            experiment_id,
+            status="completed",
+            observed_at=started_at + timedelta(seconds=90),
+            traffic_summary={"recovery": {"successes": 5}},
+        )
+        self.assertEqual(injecting["status"], "injecting")
+        self.assertEqual(recovering["status"], "recovering")
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(completed["traffic_summary"]["recovery"]["successes"], 5)
+
     def test_retention_waits_for_a_rollup_before_dropping_old_raw_data(self) -> None:
         old_day = datetime(2001, 1, 2, tzinfo=UTC)
         suffix = uuid.uuid4().hex[:12]

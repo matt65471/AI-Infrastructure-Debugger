@@ -4,6 +4,7 @@ import unittest
 import gzip
 import copy
 import json
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ class FakeDatabase:
         self.closed = False
         self.snapshots: list[dict[str, Any]] = []
         self.trace_payloads: list[bytes] = []
+        self.experiments: dict[str, dict[str, Any]] = {}
 
     def open(self) -> None:
         self.ready = True
@@ -66,6 +68,38 @@ class FakeDatabase:
             "series": [],
             "routes": [],
         }
+
+    def create_fault_experiment(self, **values: Any) -> dict[str, Any]:
+        identifier = str(values.pop("experiment_id"))
+        result = {
+            "id": identifier,
+            **values,
+            "status": "baseline",
+        }
+        for key, value in list(result.items()):
+            if isinstance(value, datetime):
+                result[key] = value.isoformat()
+        self.experiments[identifier] = result
+        return result
+
+    def update_fault_experiment(
+        self,
+        experiment_id: uuid.UUID,
+        *,
+        status: str,
+        observed_at: datetime,
+        error_message: str | None = None,
+        traffic_summary: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        result = self.experiments.get(str(experiment_id))
+        if result is None:
+            return None
+        result["status"] = status
+        result["observed_at"] = observed_at.isoformat()
+        result["error_message"] = error_message
+        if traffic_summary is not None:
+            result["traffic_summary"] = traffic_summary
+        return result
 
 
 class SnapshotLoadingTest(unittest.TestCase):
@@ -135,6 +169,19 @@ class DashboardApiTest(unittest.TestCase):
             headers={"authorization": f"Bearer {token}", "content-type": "application/json"},
         )
 
+    def experiment_payload(self) -> dict[str, Any]:
+        started = datetime.now(UTC)
+        return {
+            "id": str(uuid.uuid4()),
+            "fault_type": "cpu_saturation",
+            "namespace_name": "infrastructure-demo",
+            "target_kind": "deployment",
+            "target_name": "payment",
+            "parameters": {"duration_seconds": 30},
+            "baseline_started_at": started.isoformat(),
+            "expires_at": (started + timedelta(minutes=3)).isoformat(),
+        }
+
     def test_infrastructure_ingestion_requires_auth_and_updates_live_after_database(self) -> None:
         self.assertEqual(self.client.post("/v1/infra-snapshots", json=self.envelope()).status_code, 401)
         self.assertEqual(self.post_snapshots(self.envelope(), "wrong").status_code, 401)
@@ -169,6 +216,47 @@ class DashboardApiTest(unittest.TestCase):
             headers={"authorization": "Bearer test-token", "content-type": "application/json"},
         )
         self.assertEqual(response.status_code, 413)
+
+    def test_fault_experiment_records_lifecycle_with_authentication(self) -> None:
+        payload = self.experiment_payload()
+        self.assertEqual(
+            self.client.post("/v1/fault-experiments", json=payload).status_code,
+            401,
+        )
+        created = self.client.post(
+            "/v1/fault-experiments",
+            json=payload,
+            headers={"authorization": "Bearer test-token"},
+        )
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.json()["status"], "baseline")
+        updated = self.client.patch(
+            f"/v1/fault-experiments/{payload['id']}",
+            json={"status": "injecting", "observed_at": datetime.now(UTC).isoformat()},
+            headers={"authorization": "Bearer test-token"},
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["status"], "injecting")
+
+    def test_fault_experiment_rejects_unsafe_scope_and_duration(self) -> None:
+        payload = self.experiment_payload()
+        payload["namespace_name"] = "default"
+        response = self.client.post(
+            "/v1/fault-experiments",
+            json=payload,
+            headers={"authorization": "Bearer test-token"},
+        )
+        self.assertEqual(response.status_code, 422)
+        payload = self.experiment_payload()
+        payload["expires_at"] = (
+            datetime.now(UTC) + timedelta(minutes=11)
+        ).isoformat()
+        response = self.client.post(
+            "/v1/fault-experiments",
+            json=payload,
+            headers={"authorization": "Bearer test-token"},
+        )
+        self.assertEqual(response.status_code, 422)
 
     def test_older_replay_does_not_replace_newer_live_snapshot(self) -> None:
         newer = copy.deepcopy(self.sample)

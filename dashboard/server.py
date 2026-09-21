@@ -13,6 +13,7 @@ import logging
 import os
 import secrets
 import threading
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,10 @@ MAX_INFRA_SNAPSHOTS = 10
 MAX_SNAPSHOT_AGE = timedelta(days=7)
 MAX_SNAPSHOT_FUTURE = timedelta(minutes=5)
 LIVE_STALE_AFTER_SECONDS = 10
+MAX_EXPERIMENT_BODY_BYTES = 64 * 1024
+MAX_EXPERIMENT_DURATION = timedelta(minutes=10)
+FAULT_TYPES = {"cpu_saturation"}
+FAULT_NAMESPACE = "infrastructure-demo"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -141,6 +146,74 @@ def validate_infra_envelope(payload: Any) -> tuple[str, list[dict[str, Any]]]:
     return collector_id.strip(), validated
 
 
+def parse_experiment_timestamp(payload: dict[str, Any], field: str) -> datetime:
+    value = payload.get(field)
+    if not isinstance(value, str):
+        raise HTTPException(status_code=422, detail=f"{field} must be an ISO-8601 timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=f"{field} must be an ISO-8601 timestamp") from error
+    if parsed.tzinfo is None:
+        raise HTTPException(status_code=422, detail=f"{field} must include a timezone")
+    return parsed.astimezone(UTC)
+
+
+def validate_fault_experiment(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Request body must be a JSON object")
+    try:
+        experiment_id = uuid.UUID(str(payload.get("id", "")))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="id must be a UUID") from error
+    fault_type = payload.get("fault_type")
+    if fault_type not in FAULT_TYPES:
+        raise HTTPException(status_code=422, detail="Unsupported fault_type")
+    if payload.get("namespace_name") != FAULT_NAMESPACE:
+        raise HTTPException(status_code=422, detail=f"namespace_name must be {FAULT_NAMESPACE}")
+    if payload.get("target_kind") != "deployment":
+        raise HTTPException(status_code=422, detail="target_kind must be deployment")
+    target_name = payload.get("target_name")
+    if not isinstance(target_name, str) or not target_name or len(target_name) > 253:
+        raise HTTPException(status_code=422, detail="target_name is required")
+    parameters = payload.get("parameters", {})
+    if not isinstance(parameters, dict):
+        raise HTTPException(status_code=422, detail="parameters must be an object")
+    baseline_started_at = parse_experiment_timestamp(payload, "baseline_started_at")
+    expires_at = parse_experiment_timestamp(payload, "expires_at")
+    if expires_at <= baseline_started_at:
+        raise HTTPException(status_code=422, detail="expires_at must follow baseline_started_at")
+    if expires_at - baseline_started_at > MAX_EXPERIMENT_DURATION:
+        raise HTTPException(status_code=422, detail="Experiment duration cannot exceed 10 minutes")
+    return {
+        "experiment_id": experiment_id,
+        "fault_type": fault_type,
+        "namespace_name": FAULT_NAMESPACE,
+        "target_kind": "deployment",
+        "target_name": target_name,
+        "parameters": parameters,
+        "baseline_started_at": baseline_started_at,
+        "expires_at": expires_at,
+    }
+
+
+async def read_limited_json(request: Request, maximum_bytes: int) -> Any:
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > maximum_bytes:
+                raise HTTPException(status_code=413, detail="Request body is too large")
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length") from error
+    body = await request.body()
+    if len(body) > maximum_bytes:
+        raise HTTPException(status_code=413, detail="Request body is too large")
+    try:
+        return json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload") from error
+
+
 async def maintain_database(database: TelemetryDatabase, stop: asyncio.Event) -> None:
     while not stop.is_set():
         try:
@@ -182,6 +255,13 @@ def create_app(
     app.state.telemetry_database = database
     app.state.latest_snapshot = latest
 
+    def require_ingestion_token(request: Request) -> None:
+        if not ingestion_token:
+            raise HTTPException(status_code=503, detail="Infrastructure ingestion is not configured")
+        authorization = request.headers.get("authorization", "")
+        if not secrets.compare_digest(authorization, f"Bearer {ingestion_token}"):
+            raise HTTPException(status_code=401, detail="Invalid ingestion token")
+
     @app.get("/api/health")
     def health() -> dict[str, Any]:
         return {
@@ -206,11 +286,7 @@ def create_app(
 
     @app.post("/v1/infra-snapshots")
     async def ingest_infrastructure(request: Request) -> dict[str, Any]:
-        if not ingestion_token:
-            raise HTTPException(status_code=503, detail="Infrastructure ingestion is not configured")
-        authorization = request.headers.get("authorization", "")
-        if not secrets.compare_digest(authorization, f"Bearer {ingestion_token}"):
-            raise HTTPException(status_code=401, detail="Invalid ingestion token")
+        require_ingestion_token(request)
         content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
         if content_type != "application/json":
             raise HTTPException(status_code=415, detail="Infrastructure ingestion requires application/json")
@@ -243,6 +319,67 @@ def create_app(
             "accepted": len(snapshots),
             "latest_timestamp_unix_ms": max(int(item["node"]["timestamp_unix_ms"]) for item in snapshots),
         }
+
+    @app.post("/v1/fault-experiments", status_code=201)
+    async def create_fault_experiment(request: Request) -> dict[str, Any]:
+        require_ingestion_token(request)
+        values = validate_fault_experiment(
+            await read_limited_json(request, MAX_EXPERIMENT_BODY_BYTES)
+        )
+        if not database or not database.ready:
+            raise HTTPException(status_code=503, detail="Telemetry database is unavailable")
+        try:
+            return await asyncio.to_thread(database.create_fault_experiment, **values)
+        except Exception as error:
+            LOGGER.exception("failed to create fault experiment")
+            raise HTTPException(status_code=503, detail="Telemetry database is unavailable") from error
+
+    @app.patch("/v1/fault-experiments/{experiment_id}")
+    async def update_fault_experiment(
+        experiment_id: str, request: Request
+    ) -> dict[str, Any]:
+        require_ingestion_token(request)
+        try:
+            parsed_id = uuid.UUID(experiment_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="experiment_id must be a UUID") from error
+        payload = await read_limited_json(request, MAX_EXPERIMENT_BODY_BYTES)
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="Request body must be a JSON object")
+        status = payload.get("status")
+        if status not in {
+            "injecting", "recovering", "completed", "failed", "recovery_failed"
+        }:
+            raise HTTPException(status_code=422, detail="Unsupported experiment status")
+        observed_at = parse_experiment_timestamp(payload, "observed_at")
+        error_message = payload.get("error_message")
+        if error_message is not None and (
+            not isinstance(error_message, str) or len(error_message) > 4000
+        ):
+            raise HTTPException(status_code=422, detail="error_message must be at most 4000 characters")
+        traffic_summary = payload.get("traffic_summary")
+        if traffic_summary is not None and not isinstance(traffic_summary, dict):
+            raise HTTPException(status_code=422, detail="traffic_summary must be an object")
+        if not database or not database.ready:
+            raise HTTPException(status_code=503, detail="Telemetry database is unavailable")
+        try:
+            result = await asyncio.to_thread(
+                database.update_fault_experiment,
+                parsed_id,
+                status=status,
+                observed_at=observed_at,
+                error_message=error_message,
+                traffic_summary=traffic_summary,
+            )
+        except Exception as error:
+            LOGGER.exception("failed to update fault experiment")
+            raise HTTPException(status_code=503, detail="Telemetry database is unavailable") from error
+        if result is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Experiment was not found or the status transition is invalid",
+            )
+        return result
 
     @app.post("/v1/traces")
     async def ingest_traces(request: Request) -> Response:
