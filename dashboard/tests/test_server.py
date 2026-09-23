@@ -232,11 +232,34 @@ class DashboardApiTest(unittest.TestCase):
         self.assertEqual(created.json()["status"], "baseline")
         updated = self.client.patch(
             f"/v1/fault-experiments/{payload['id']}",
-            json={"status": "injecting", "observed_at": datetime.now(UTC).isoformat()},
+            json={"status": "active", "observed_at": datetime.now(UTC).isoformat()},
             headers={"authorization": "Bearer test-token"},
         )
         self.assertEqual(updated.status_code, 200)
-        self.assertEqual(updated.json()["status"], "injecting")
+        self.assertEqual(updated.json()["status"], "active")
+
+    def test_healthy_experiment_targets_the_demo_namespace(self) -> None:
+        payload = self.experiment_payload()
+        payload.update(
+            {
+                "fault_type": "healthy",
+                "target_kind": "namespace",
+                "target_name": "infrastructure-demo",
+            }
+        )
+        accepted = self.client.post(
+            "/v1/fault-experiments",
+            json=payload,
+            headers={"authorization": "Bearer test-token"},
+        )
+        self.assertEqual(accepted.status_code, 201)
+        payload["target_kind"] = "deployment"
+        rejected = self.client.post(
+            "/v1/fault-experiments",
+            json=payload | {"id": str(uuid.uuid4())},
+            headers={"authorization": "Bearer test-token"},
+        )
+        self.assertEqual(rejected.status_code, 422)
 
     def test_fault_experiment_rejects_unsafe_scope_and_duration(self) -> None:
         payload = self.experiment_payload()

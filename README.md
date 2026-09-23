@@ -99,6 +99,7 @@ kubernetes/
 dashboard/
 ├── Dockerfile
 ├── database.py
+├── features.py
 ├── maintenance.py
 ├── migrations/
 ├── server.py
@@ -458,8 +459,8 @@ its own deadline. The runner generates order traffic during a healthy
 baseline, the injection, and recovery. It records all phase timestamps and the
 traffic summary in `telemetry.fault_experiments`.
 
-Rebuild and deploy the dashboard image so migration
-`002_fault_experiments.sql` and the experiment API are available, then run on
+Rebuild and deploy the dashboard image so the experiment migrations and API
+are available, then run on
 the k3s VM from the repository root:
 
 ```bash
@@ -482,7 +483,42 @@ during recovery. Inspect the resulting labels with:
 ```bash
 sudo k3s kubectl exec -n infrastructure-demo postgres-0 -- \
   sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
-  "SELECT id, fault_type, target_name, status, baseline_started_at, injected_at, fault_ended_at, recovery_completed_at FROM telemetry.fault_experiments ORDER BY created_at DESC;"'
+  "SELECT id, fault_type, target_name, status, baseline_started_at, active_started_at, active_ended_at, recovery_completed_at FROM telemetry.fault_experiments ORDER BY created_at DESC;"'
+```
+
+Only one experiment may be active at a time. A healthy control uses the same
+traffic and timing without applying a fault:
+
+```bash
+python3 -m fault_injection.runner healthy \
+  --baseline 30 \
+  --duration 30 \
+  --recovery 60 \
+  --confirm infrastructure-demo
+```
+
+The `telemetry-features` CronJob converts completed experiments into versioned
+five-second rows. `fault_experiments` stores labels,
+`experiment_feature_builds` records whether feature generation completed, and
+`experiment_feature_buckets` stores one row per experiment, time bucket, and
+node/Deployment/pod/container resource. Raw telemetry remains the source of
+truth. Feature generation waits 30 seconds after recovery for telemetry to
+arrive and retains missing measurements as `NULL`.
+
+Inspect recent builds and their row counts:
+
+```bash
+sudo k3s kubectl exec -n infrastructure-demo postgres-0 -- \
+  sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
+  "SELECT experiment_id, feature_version, status, row_count, error_message FROM telemetry.experiment_feature_builds ORDER BY started_at DESC;"'
+```
+
+Force a manual rebuild when changing feature version 1 during development:
+
+```bash
+sudo k3s kubectl exec -n infrastructure-demo \
+  deployment/telemetry-dashboard -- \
+  python3 maintenance.py features --experiment-id <experiment-uuid> --force
 ```
 
 ## Test Workloads

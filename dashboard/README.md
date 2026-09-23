@@ -49,9 +49,11 @@ Find the VM address:
 hostname -I
 ```
 
-The rollup job runs once per minute. Raw spans and infrastructure partitions are
-kept for seven days; one-minute rollups and Kubernetes Events are kept for 30
-days. The PVC and PV use `Retain`, but they are not a backup of the VM disk.
+The rollup and experiment-feature jobs run once per minute. Raw spans and
+infrastructure partitions are kept for seven days; one-minute rollups and
+Kubernetes Events are kept for 30 days. Versioned experiment feature buckets
+are retained so training data survives raw retention. The PVC and PV use
+`Retain`, but they are not a backup of the VM disk.
 The deployment script creates the database Secret only when it is absent, so
 rerunning the script does not rotate credentials away from an existing retained
 database.

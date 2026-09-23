@@ -16,11 +16,13 @@ from pathlib import Path
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
     ExportTraceServiceRequest,
 )
+from psycopg.errors import UniqueViolation
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from database import TelemetryDatabase, resource_uuid  # noqa: E402
+from features import build_experiment_features  # noqa: E402
 from maintenance import enforce_retention, rollup_bucket, rollup_recent  # noqa: E402
 
 
@@ -287,6 +289,17 @@ class PostgreSQLIntegrationTest(unittest.TestCase):
         )
         self.assertEqual(created["status"], "baseline")
         self.assertEqual(created["id"], str(experiment_id))
+        with self.assertRaises(UniqueViolation):
+            self.database.create_fault_experiment(
+                experiment_id=uuid.uuid4(),
+                fault_type="healthy",
+                namespace_name="infrastructure-demo",
+                target_kind="namespace",
+                target_name="infrastructure-demo",
+                parameters={},
+                baseline_started_at=started_at,
+                expires_at=started_at + timedelta(minutes=3),
+            )
         self.assertIsNone(
             self.database.update_fault_experiment(
                 experiment_id,
@@ -294,9 +307,9 @@ class PostgreSQLIntegrationTest(unittest.TestCase):
                 observed_at=started_at + timedelta(seconds=1),
             )
         )
-        injecting = self.database.update_fault_experiment(
+        active = self.database.update_fault_experiment(
             experiment_id,
-            status="injecting",
+            status="active",
             observed_at=started_at + timedelta(seconds=30),
         )
         recovering = self.database.update_fault_experiment(
@@ -310,10 +323,155 @@ class PostgreSQLIntegrationTest(unittest.TestCase):
             observed_at=started_at + timedelta(seconds=90),
             traffic_summary={"recovery": {"successes": 5}},
         )
-        self.assertEqual(injecting["status"], "injecting")
+        self.assertEqual(active["status"], "active")
         self.assertEqual(recovering["status"], "recovering")
         self.assertEqual(completed["status"], "completed")
         self.assertEqual(completed["traffic_summary"]["recovery"]["successes"], 5)
+
+    def test_feature_build_creates_versioned_resource_sequences(self) -> None:
+        suffix = uuid.uuid4().hex[:12]
+        namespace = f"feature-test-{suffix}"
+        service = f"payment-{suffix}"
+        pod_uid = f"pod-{suffix}"
+        started = datetime.now(UTC).replace(microsecond=0) - timedelta(minutes=2)
+
+        def snapshot(at: datetime, cpu: float, throttled: int) -> dict:
+            common = {
+                "namespace": namespace,
+                "cpu_usage_percent": cpu,
+                "throttled_usec_delta": throttled,
+                "memory_current_bytes": 64_000_000,
+                "restart_count": 0,
+            }
+            return {
+                "node": {
+                    "timestamp_unix_ms": int(at.timestamp() * 1000),
+                    "hostname": f"node-{suffix}",
+                    "logical_cpu_count": 4,
+                    "cpu_usage_percent": cpu / 2,
+                    "memory_total_kb": 1_000_000,
+                    "memory_available_kb": 500_000,
+                },
+                "deployments": [{
+                    **common,
+                    "deployment_name": service,
+                    "deployment_uid": f"deployment-{suffix}",
+                    "desired_replicas": 1,
+                    "ready_replicas": 1,
+                    "unavailable_replicas": 0,
+                    "generation": 1,
+                    "observed_generation": 1,
+                }],
+                "pods": [{
+                    **common,
+                    "pod_uid": pod_uid,
+                    "pod_name": f"{service}-abcde",
+                    "workload_kind": "Deployment",
+                    "workload_name": service,
+                    "all_containers_ready": True,
+                }],
+                "containers": [{
+                    **common,
+                    "pod_uid": pod_uid,
+                    "pod_name": f"{service}-abcde",
+                    "container_id": suffix * 5 + suffix[:4],
+                    "container_name": service,
+                    "workload_kind": "Deployment",
+                    "workload_name": service,
+                    "container_ready": True,
+                }],
+                "top_cpu_processes": [],
+                "top_memory_processes": [],
+                "kubernetes_events": [],
+            }
+
+        for offset, cpu, throttled in ((2, 10.0, 0), (12, 99.0, 5000), (22, 12.0, 0)):
+            self.database.ingest_snapshot(
+                snapshot(started + timedelta(seconds=offset), cpu, throttled)
+            )
+
+        trace_request = ExportTraceServiceRequest()
+        resource_spans = trace_request.resource_spans.add()
+        add_string_attribute(resource_spans.resource, "service.name", service)
+        add_string_attribute(resource_spans.resource, "k8s.namespace.name", namespace)
+        add_string_attribute(resource_spans.resource, "service.instance.id", pod_uid)
+        add_string_attribute(resource_spans.resource, "k8s.container.name", service)
+        span = resource_spans.scope_spans.add().spans.add()
+        span.trace_id = uuid.uuid4().bytes
+        span.span_id = (1).to_bytes(8, "big")
+        span.name = "POST /pay"
+        span.kind = 2
+        span.start_time_unix_nano = int(
+            (started + timedelta(seconds=13)).timestamp() * 1_000_000_000
+        )
+        span.end_time_unix_nano = span.start_time_unix_nano + 250_000_000
+        add_integer_attribute(span, "http.response.status_code", 200)
+        self.database.ingest_otlp_traces(trace_request.SerializeToString())
+
+        experiment_id = uuid.uuid4()
+        self.database.create_fault_experiment(
+            experiment_id=experiment_id,
+            fault_type="cpu_saturation",
+            namespace_name=namespace,
+            target_kind="deployment",
+            target_name=service,
+            parameters={"duration_seconds": 10},
+            baseline_started_at=started,
+            expires_at=started + timedelta(minutes=5),
+        )
+        self.database.update_fault_experiment(
+            experiment_id, status="active",
+            observed_at=started + timedelta(seconds=10),
+        )
+        self.database.update_fault_experiment(
+            experiment_id, status="recovering",
+            observed_at=started + timedelta(seconds=20),
+        )
+        self.database.update_fault_experiment(
+            experiment_id, status="completed",
+            observed_at=started + timedelta(seconds=30),
+        )
+
+        row_count = build_experiment_features(self.database, experiment_id)
+        repeated_count = build_experiment_features(self.database, experiment_id)
+        self.assertEqual(row_count, repeated_count)
+        self.assertGreater(row_count, 0)
+        with self.database.pool.connection() as connection:
+            build = connection.execute(
+                """
+                SELECT * FROM telemetry.experiment_feature_builds
+                WHERE experiment_id = %s AND feature_version = 1
+                """,
+                (experiment_id,),
+            ).fetchone()
+            container = connection.execute(
+                """
+                SELECT feature.*
+                FROM telemetry.experiment_feature_buckets feature
+                JOIN telemetry.resources resource ON resource.id = feature.resource_id
+                WHERE feature.experiment_id = %s AND feature.phase = 'active'
+                  AND resource.kind = 4 AND resource.container_name = %s
+                  AND feature.sample_count > 0
+                """,
+                (experiment_id, service),
+            ).fetchone()
+            deployment = connection.execute(
+                """
+                SELECT feature.*
+                FROM telemetry.experiment_feature_buckets feature
+                JOIN telemetry.resources resource ON resource.id = feature.resource_id
+                WHERE feature.experiment_id = %s AND feature.phase = 'active'
+                  AND resource.kind = 2 AND resource.deployment_name = %s
+                  AND feature.server_request_count > 0
+                """,
+                (experiment_id, service),
+            ).fetchone()
+        self.assertEqual(build["status"], "completed")
+        self.assertEqual(build["row_count"], row_count)
+        self.assertAlmostEqual(container["cpu_usage_maximum"], 99.0)
+        self.assertEqual(container["cpu_throttled_usec"], 5000)
+        self.assertEqual(deployment["server_request_count"], 1)
+        self.assertAlmostEqual(deployment["server_latency_average_ms"], 250.0)
 
     def test_retention_waits_for_a_rollup_before_dropping_old_raw_data(self) -> None:
         old_day = datetime(2001, 1, 2, tzinfo=UTC)

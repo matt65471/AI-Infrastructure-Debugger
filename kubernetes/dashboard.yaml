@@ -125,6 +125,49 @@ spec:
 apiVersion: batch/v1
 kind: CronJob
 metadata:
+  name: telemetry-features
+  namespace: infrastructure-demo
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        spec:
+          restartPolicy: OnFailure
+          automountServiceAccountToken: false
+          containers:
+            - name: features
+              image: infrastructure-debugger/dashboard:v1
+              imagePullPolicy: Never
+              command: ["python3", "maintenance.py", "features"]
+              workingDir: /app/dashboard
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: telemetry-postgres
+                      key: database-url
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 64Mi
+                limits:
+                  cpu: 250m
+                  memory: 192Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
   name: telemetry-retention
   namespace: infrastructure-demo
 spec:

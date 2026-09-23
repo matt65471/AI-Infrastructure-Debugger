@@ -23,6 +23,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from google.protobuf.message import DecodeError
+from psycopg.errors import UniqueViolation
 
 from database import TelemetryDatabase
 
@@ -39,8 +40,9 @@ MAX_SNAPSHOT_FUTURE = timedelta(minutes=5)
 LIVE_STALE_AFTER_SECONDS = 10
 MAX_EXPERIMENT_BODY_BYTES = 64 * 1024
 MAX_EXPERIMENT_DURATION = timedelta(minutes=10)
-FAULT_TYPES = {"cpu_saturation"}
+FAULT_TYPES = {"cpu_saturation", "healthy"}
 FAULT_NAMESPACE = "infrastructure-demo"
+FAULT_TARGETS = {"payment", "checkout", "frontend"}
 LOGGER = logging.getLogger(__name__)
 
 
@@ -171,11 +173,19 @@ def validate_fault_experiment(payload: Any) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="Unsupported fault_type")
     if payload.get("namespace_name") != FAULT_NAMESPACE:
         raise HTTPException(status_code=422, detail=f"namespace_name must be {FAULT_NAMESPACE}")
-    if payload.get("target_kind") != "deployment":
-        raise HTTPException(status_code=422, detail="target_kind must be deployment")
+    target_kind = payload.get("target_kind")
     target_name = payload.get("target_name")
-    if not isinstance(target_name, str) or not target_name or len(target_name) > 253:
-        raise HTTPException(status_code=422, detail="target_name is required")
+    if fault_type == "healthy":
+        if target_kind != "namespace" or target_name != FAULT_NAMESPACE:
+            raise HTTPException(
+                status_code=422,
+                detail="healthy experiments must target the infrastructure-demo namespace",
+            )
+    elif target_kind != "deployment" or target_name not in FAULT_TARGETS:
+        raise HTTPException(
+            status_code=422,
+            detail="CPU experiments must target a supported demo deployment",
+        )
     parameters = payload.get("parameters", {})
     if not isinstance(parameters, dict):
         raise HTTPException(status_code=422, detail="parameters must be an object")
@@ -189,7 +199,7 @@ def validate_fault_experiment(payload: Any) -> dict[str, Any]:
         "experiment_id": experiment_id,
         "fault_type": fault_type,
         "namespace_name": FAULT_NAMESPACE,
-        "target_kind": "deployment",
+        "target_kind": target_kind,
         "target_name": target_name,
         "parameters": parameters,
         "baseline_started_at": baseline_started_at,
@@ -330,6 +340,11 @@ def create_app(
             raise HTTPException(status_code=503, detail="Telemetry database is unavailable")
         try:
             return await asyncio.to_thread(database.create_fault_experiment, **values)
+        except UniqueViolation as error:
+            raise HTTPException(
+                status_code=409,
+                detail="Another experiment is already active",
+            ) from error
         except Exception as error:
             LOGGER.exception("failed to create fault experiment")
             raise HTTPException(status_code=503, detail="Telemetry database is unavailable") from error
@@ -348,7 +363,7 @@ def create_app(
             raise HTTPException(status_code=422, detail="Request body must be a JSON object")
         status = payload.get("status")
         if status not in {
-            "injecting", "recovering", "completed", "failed", "recovery_failed"
+            "active", "recovering", "completed", "failed", "recovery_failed"
         }:
             raise HTTPException(status_code=422, detail="Unsupported experiment status")
         observed_at = parse_experiment_timestamp(payload, "observed_at")

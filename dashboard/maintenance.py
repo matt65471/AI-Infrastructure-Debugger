@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from typing import Any
 from psycopg import sql
 
 from database import TelemetryDatabase
+from features import build_experiment_features, build_pending_features
 
 
 MIGRATIONS_ROOT = Path(__file__).resolve().parent / "migrations"
@@ -260,8 +262,14 @@ def enforce_retention(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("rollup", "retention"))
+    parser.add_argument("command", choices=("rollup", "retention", "features"))
+    parser.add_argument("--experiment-id", type=uuid.UUID)
+    parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
+    if args.command != "features" and (args.experiment_id or args.force):
+        parser.error("--experiment-id and --force are only valid for features")
+    if args.force and not args.experiment_id:
+        parser.error("--force requires --experiment-id")
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
         raise SystemExit("DATABASE_URL is required")
@@ -270,9 +278,21 @@ def main() -> None:
     try:
         if args.command == "rollup":
             print(f"wrote {rollup_recent(database)} rollup rows")
-        else:
+        elif args.command == "retention":
             removed = enforce_retention(database)
             print(f"removed {len(removed)} expired partitions")
+        elif args.experiment_id:
+            rows = build_experiment_features(
+                database, args.experiment_id, force=args.force
+            )
+            print(f"wrote {rows or 0} experiment feature rows")
+        else:
+            result = build_pending_features(database)
+            print(
+                "experiment features: "
+                f"completed={result['completed']} failed={result['failed']} "
+                f"expired={result['expired']}"
+            )
     finally:
         database.close()
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a labeled, time-bounded CPU saturation experiment."""
+"""Run a labeled, time-bounded fault or healthy control experiment."""
 
 from __future__ import annotations
 
@@ -249,8 +249,14 @@ def run_experiment(args: argparse.Namespace) -> uuid.UUID:
     if args.confirm != NAMESPACE:
         raise RuntimeError(f"pass --confirm {NAMESPACE} to authorize the fault")
     kubernetes = Kubernetes(shlex.split(args.kubectl), NAMESPACE)
-    kubernetes.require_ready_deployment(args.target)
-    pod, container = kubernetes.ready_pod(args.target)
+    healthy_observation = args.fault == "healthy"
+    deployments = ("payment", "checkout", "frontend") if healthy_observation else (args.target,)
+    for deployment in deployments:
+        kubernetes.require_ready_deployment(deployment)
+    pod: str | None = None
+    container: str | None = None
+    if not healthy_observation:
+        pod, container = kubernetes.ready_pod(args.target)
     token = (
         Path(args.token_file).read_text(encoding="utf-8").strip()
         if args.token_file
@@ -267,14 +273,13 @@ def run_experiment(args: argparse.Namespace) -> uuid.UUID:
     api.create(
         {
             "id": str(experiment_id),
-            "fault_type": "cpu_saturation",
+            "fault_type": "healthy" if healthy_observation else "cpu_saturation",
             "namespace_name": NAMESPACE,
-            "target_kind": "deployment",
-            "target_name": args.target,
+            "target_kind": "namespace" if healthy_observation else "deployment",
+            "target_name": NAMESPACE if healthy_observation else args.target,
             "parameters": {
                 "duration_seconds": args.duration,
-                "pod": pod,
-                "container": container,
+                **({} if healthy_observation else {"pod": pod, "container": container}),
             },
             "baseline_started_at": baseline_started_at.isoformat(),
             "expires_at": expires_at.isoformat(),
@@ -291,21 +296,29 @@ def run_experiment(args: argparse.Namespace) -> uuid.UUID:
             raise RuntimeError(
                 "baseline verification failed: application traffic is unhealthy"
             )
-        state = "injecting"
+        state = "active"
         traffic.set_phase(state)
         api.update(experiment_id, state)
-        print(
-            f"experiment_id={experiment_id} phase=injecting "
-            f"target={pod}/{container} seconds={args.duration}"
-        )
-        kubernetes.saturate_cpu(pod, container, args.duration)
+        if healthy_observation:
+            print(
+                f"experiment_id={experiment_id} phase=active "
+                f"scenario=healthy seconds={args.duration}"
+            )
+            time.sleep(args.duration)
+        else:
+            print(
+                f"experiment_id={experiment_id} phase=active "
+                f"target={pod}/{container} seconds={args.duration}"
+            )
+            kubernetes.saturate_cpu(str(pod), str(container), args.duration)
 
         state = "recovering"
         traffic.set_phase(state)
         api.update(experiment_id, state)
         print(f"experiment_id={experiment_id} phase=recovering seconds={args.recovery}")
         time.sleep(args.recovery)
-        kubernetes.require_ready_deployment(args.target)
+        for deployment in deployments:
+            kubernetes.require_ready_deployment(deployment)
         if not traffic.recovered():
             summary = traffic.summary()
             api.update(
@@ -338,7 +351,8 @@ def run_experiment(args: argparse.Namespace) -> uuid.UUID:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "fault", nargs="?", choices=("cpu-saturation",), default="cpu-saturation"
+        "fault", nargs="?", choices=("cpu-saturation", "healthy"),
+        default="cpu-saturation",
     )
     parser.add_argument(
         "--target", choices=("payment", "checkout", "frontend"), default="payment"

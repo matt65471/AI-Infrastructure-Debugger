@@ -3,7 +3,12 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
-from fault_injection.runner import Kubernetes, NAMESPACE, TrafficGenerator
+from fault_injection.runner import (
+    Kubernetes,
+    NAMESPACE,
+    TrafficGenerator,
+    build_parser,
+)
 
 
 class KubernetesSafetyTest(unittest.TestCase):
@@ -41,6 +46,10 @@ class TrafficSummaryTest(unittest.TestCase):
         traffic = TrafficGenerator("http://127.0.0.1:1")
         self.assertEqual(traffic.summary(), {})
         self.assertFalse(traffic.recovered())
+
+    def test_parser_supports_healthy_observations(self) -> None:
+        args = build_parser().parse_args(["healthy"])
+        self.assertEqual(args.fault, "healthy")
 
 
 if __name__ == "__main__":

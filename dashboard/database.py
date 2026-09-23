@@ -182,30 +182,42 @@ class TelemetryDatabase:
     ) -> dict[str, Any]:
         """Create an idempotent experiment record before a fault is applied."""
         with self.pool.connection() as connection:
-            row = connection.execute(
-                """
-                INSERT INTO telemetry.fault_experiments (
-                    id, fault_type, namespace_name, target_kind, target_name,
-                    parameters, status, baseline_started_at, expires_at
-                ) VALUES (
-                    %(id)s, %(fault_type)s, %(namespace_name)s,
-                    %(target_kind)s, %(target_name)s, %(parameters)s,
-                    'baseline', %(baseline_started_at)s, %(expires_at)s
+            with connection.transaction():
+                connection.execute(
+                    """
+                    UPDATE telemetry.fault_experiments
+                    SET status = 'failed', failed_at = now(),
+                        error_message = COALESCE(
+                            error_message, 'experiment expired before completion'
+                        ), updated_at = now()
+                    WHERE status IN ('baseline', 'active', 'recovering')
+                      AND expires_at < now()
+                    """
                 )
-                ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id
-                RETURNING *
-                """,
-                {
-                    "id": experiment_id,
-                    "fault_type": fault_type,
-                    "namespace_name": namespace_name,
-                    "target_kind": target_kind,
-                    "target_name": target_name,
-                    "parameters": Jsonb(parameters),
-                    "baseline_started_at": baseline_started_at,
-                    "expires_at": expires_at,
-                },
-            ).fetchone()
+                row = connection.execute(
+                    """
+                    INSERT INTO telemetry.fault_experiments (
+                        id, fault_type, namespace_name, target_kind, target_name,
+                        parameters, status, baseline_started_at, expires_at
+                    ) VALUES (
+                        %(id)s, %(fault_type)s, %(namespace_name)s,
+                        %(target_kind)s, %(target_name)s, %(parameters)s,
+                        'baseline', %(baseline_started_at)s, %(expires_at)s
+                    )
+                    ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id
+                    RETURNING *
+                    """,
+                    {
+                        "id": experiment_id,
+                        "fault_type": fault_type,
+                        "namespace_name": namespace_name,
+                        "target_kind": target_kind,
+                        "target_name": target_name,
+                        "parameters": Jsonb(parameters),
+                        "baseline_started_at": baseline_started_at,
+                        "expires_at": expires_at,
+                    },
+                ).fetchone()
         return _fault_experiment_json(row)
 
     def update_fault_experiment(
@@ -219,8 +231,8 @@ class TelemetryDatabase:
     ) -> dict[str, Any] | None:
         """Advance an experiment and stamp the corresponding lifecycle time."""
         timestamp_column = {
-            "injecting": "injected_at",
-            "recovering": "fault_ended_at",
+            "active": "active_started_at",
+            "recovering": "active_ended_at",
             "completed": "recovery_completed_at",
             "recovery_failed": "recovery_completed_at",
             "failed": "failed_at",
@@ -228,11 +240,11 @@ class TelemetryDatabase:
         if timestamp_column is None:
             raise ValueError(f"unsupported experiment status: {status}")
         allowed_previous = {
-            "injecting": ["baseline"],
-            "recovering": ["injecting"],
+            "active": ["baseline"],
+            "recovering": ["active"],
             "completed": ["recovering"],
             "recovery_failed": ["recovering"],
-            "failed": ["baseline", "injecting", "recovering"],
+            "failed": ["baseline", "active", "recovering"],
         }[status]
         with self.pool.connection() as connection:
             row = connection.execute(
@@ -972,8 +984,8 @@ def _fault_experiment_json(row: dict[str, Any]) -> dict[str, Any]:
     for field in (
         "created_at",
         "baseline_started_at",
-        "injected_at",
-        "fault_ended_at",
+        "active_started_at",
+        "active_ended_at",
         "recovery_completed_at",
         "failed_at",
         "expires_at",
